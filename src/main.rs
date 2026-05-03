@@ -12,7 +12,7 @@ mod ui;
 use app::{App, View};
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{KeyCode, KeyEvent, KeyModifiers, DisableMouseCapture, EnableMouseCapture},
+    event::{KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -60,7 +60,7 @@ async fn main() -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -74,7 +74,7 @@ async fn main() -> io::Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(e) = result {
@@ -153,37 +153,34 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 
-    // n/p always cycle sessions in live mode (any view)
-    if app.engine.is_live() {
-        match key.code {
-            KeyCode::Char('n') => {
-                if let Some(live) = app.engine.live_engine_mut() {
-                    live.next_session();
-                    app.session_list_cursor = live.active_idx;
-                    app.session_locked = true;
-                    app.view = View::Agent;
-                    app.focused_pane = 0;
-                    app.pane_scrolls.clear();
-                }
-                return;
-            }
-            KeyCode::Char('p') => {
-                if let Some(live) = app.engine.live_engine_mut() {
-                    live.prev_session();
-                    app.session_list_cursor = live.active_idx;
-                    app.session_locked = true;
-                    app.view = View::Agent;
-                    app.focused_pane = 0;
-                    app.pane_scrolls.clear();
-                }
-                return;
-            }
-            _ => {}
-        }
-    }
-
     // Session list view
     if app.view == View::Sessions {
+        // Rename mode: capture text input
+        if let Some(ref mut buf) = app.rename_input {
+            match key.code {
+                KeyCode::Enter => {
+                    let new_name = buf.clone();
+                    if !new_name.is_empty() {
+                        if let Some(live) = app.engine.live_engine_mut() {
+                            live.rename_session(app.session_list_cursor, new_name);
+                        }
+                    }
+                    app.rename_input = None;
+                }
+                KeyCode::Esc => {
+                    app.rename_input = None;
+                }
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Char(c) => {
+                    buf.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Down => {
                 if let Some(live) = app.engine.live_engine() {
@@ -214,9 +211,44 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.focused_pane = 0;
                 app.pane_scrolls.clear();
             }
+            KeyCode::Char('r') => {
+                // Start rename with current name pre-filled
+                if let Some(live) = app.engine.live_engine() {
+                    if let Some(session) = live.sessions.get(app.session_list_cursor) {
+                        app.rename_input = Some(session.name.clone());
+                    }
+                }
+            }
             _ => {}
         }
         return;
+    }
+
+    // n/p cycle sessions in live mode (agent view only)
+    if app.engine.is_live() {
+        match key.code {
+            KeyCode::Char('n') => {
+                if let Some(live) = app.engine.live_engine_mut() {
+                    live.next_session();
+                    app.session_list_cursor = live.active_idx;
+                    app.session_locked = true;
+                    app.focused_pane = 0;
+                    app.pane_scrolls.clear();
+                }
+                return;
+            }
+            KeyCode::Char('p') => {
+                if let Some(live) = app.engine.live_engine_mut() {
+                    live.prev_session();
+                    app.session_list_cursor = live.active_idx;
+                    app.session_locked = true;
+                    app.focused_pane = 0;
+                    app.pane_scrolls.clear();
+                }
+                return;
+            }
+            _ => {}
+        }
     }
 
     // Agent view keys

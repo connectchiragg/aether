@@ -269,12 +269,25 @@ fn render_session_list(frame: &mut Frame, app: &App, live: &LiveEngine, area: Re
             Span::styled("○ ", theme::dim_style())
         };
 
-        // Session name line
-        lines.push(Line::from(vec![
-            cursor,
-            status_indicator,
-            Span::styled(&session.name, name_style),
-        ]));
+        // Session name line (or rename input)
+        let is_renaming = is_selected && app.rename_input.is_some();
+        if is_renaming {
+            let buf = app.rename_input.as_deref().unwrap_or("");
+            lines.push(Line::from(vec![
+                cursor,
+                status_indicator,
+                Span::styled(
+                    format!("{buf}▏"),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                cursor,
+                status_indicator,
+                Span::styled(&session.name, name_style),
+            ]));
+        }
 
         // Detail line with stats
         let detail = if agent_count == 0 && msg_count == 0 {

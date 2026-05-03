@@ -13,6 +13,8 @@ use std::time::SystemTime;
 pub struct SessionState {
     pub session_id: String,
     pub name: String,
+    /// User-set name override (persisted, takes priority over JSONL name)
+    pub name_override: Option<String>,
     pub agents: Vec<Agent>,
     pub messages: Vec<Message>,
     pub turns: Vec<TurnMarker>,
@@ -46,6 +48,7 @@ impl SessionState {
         Self {
             session_id: session_id.clone(),
             name: session_id,
+            name_override: None,
             agents: Vec::new(),
             messages: Vec::new(),
             turns: Vec::new(),
@@ -141,13 +144,15 @@ impl SessionState {
         match event {
             LiveEvent::SessionStart { session_id, name, .. } => {
                 // A new session_start in the same file means the old session was cleared
-                // (e.g. /clear wipes context and /tui re-initializes with a new session ID)
                 if self.session_id != session_id && !self.messages.is_empty() {
                     self.clear_display();
                 }
                 self.session_id = session_id;
-                if let Some(n) = name {
-                    self.name = n;
+                // Only update name from JSONL if user hasn't set a custom name
+                if self.name_override.is_none() {
+                    if let Some(n) = name {
+                        self.name = n;
+                    }
                 }
             }
             LiveEvent::TurnStart { turn_index, prompt, .. } => {
@@ -225,15 +230,55 @@ pub struct LiveEngine {
     pub active_idx: usize,
     threads_dir: PathBuf,
     scan_cooldown: u32,
+    /// Persisted name overrides: file stem → custom name
+    name_overrides: HashMap<String, String>,
 }
 
 impl LiveEngine {
     pub fn new(threads_dir: PathBuf) -> Self {
+        let name_overrides = Self::load_name_overrides(&threads_dir);
         Self {
             sessions: Vec::new(),
             active_idx: 0,
             threads_dir,
             scan_cooldown: 0,
+            name_overrides,
+        }
+    }
+
+    fn overrides_path(threads_dir: &PathBuf) -> PathBuf {
+        threads_dir.join(".session-names.json")
+    }
+
+    fn load_name_overrides(threads_dir: &PathBuf) -> HashMap<String, String> {
+        let path = Self::overrides_path(threads_dir);
+        match fs::read_to_string(&path) {
+            Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        }
+    }
+
+    fn save_name_overrides(&self) {
+        let path = Self::overrides_path(&self.threads_dir);
+        if let Ok(data) = serde_json::to_string_pretty(&self.name_overrides) {
+            let _ = fs::write(path, data);
+        }
+    }
+
+    pub fn rename_session(&mut self, session_idx: usize, new_name: String) {
+        if let Some(session) = self.sessions.get_mut(session_idx) {
+            let file_stem = session.file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            session.name = new_name.clone();
+            session.name_override = Some(new_name);
+
+            // Persist
+            self.name_overrides.insert(file_stem, session.name.clone());
+            self.save_name_overrides();
         }
     }
 
@@ -292,7 +337,16 @@ impl LiveEngine {
 
             let already_tracked = self.sessions.iter().any(|s| s.file_path == path);
             if !already_tracked {
-                self.sessions.push(SessionState::new(path));
+                let mut session = SessionState::new(path.clone());
+                // Apply persisted name override
+                let stem = path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if let Some(custom_name) = self.name_overrides.get(stem) {
+                    session.name = custom_name.clone();
+                    session.name_override = Some(custom_name.clone());
+                }
+                self.sessions.push(session);
             }
         }
 

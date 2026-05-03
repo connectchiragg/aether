@@ -200,8 +200,10 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let help = if app.view == View::Sessions {
-        " q quit  up/down navigate  enter select  n/p cycle"
+    let help = if app.rename_input.is_some() {
+        " enter confirm  esc cancel"
+    } else if app.view == View::Sessions {
+        " q quit  up/down navigate  enter select  r rename"
     } else if app.engine.is_live() {
         " q quit  left/right focus  up/down scroll  n/p session  esc back  space pause"
     } else {

@@ -23,6 +23,8 @@ pub struct App {
     pub view: View,
     /// Per-pane scroll offsets (preserved across pane switches)
     pub pane_scrolls: HashMap<usize, u16>,
+    /// Rename input state: Some(buffer) when actively renaming
+    pub rename_input: Option<String>,
 }
 
 impl App {
@@ -37,6 +39,7 @@ impl App {
             boot_ticks: 0,
             view: View::Boot,
             pane_scrolls: HashMap::new(),
+            rename_input: None,
         }
     }
 
@@ -51,6 +54,7 @@ impl App {
             boot_ticks: 0,
             view: View::Boot,
             pane_scrolls: HashMap::new(),
+            rename_input: None,
         }
     }
 
