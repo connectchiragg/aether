@@ -154,7 +154,7 @@ async fn run_app(
                     app.boot_ticks += 1;
                     app.engine.tick(app.session_locked);
                     // After boot: always go to session list in live mode
-                    if app.boot_ticks >= 44 {
+                    if app.boot_ticks >= 54 {
                         app.view = if app.engine.is_live() {
                             View::Sessions
                         } else {

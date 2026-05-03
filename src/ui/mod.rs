@@ -92,19 +92,44 @@ fn render_boot(frame: &mut Frame, app: &App) {
     ])
     .split(area);
 
-    // Eye art — reveal line by line with glowing leading edge
-    let reveal_f = (EYE_ART.len() as f32) * logo_progress;
+    // Eye art — lava gradient with breathing pulse after reveal
+    let total = EYE_ART.len() as f32;
+    let reveal_f = total * logo_progress;
     let lines_to_show = reveal_f.ceil() as usize;
     let glow_line = if lines_to_show > 0 { lines_to_show - 1 } else { 0 };
-    let bright = Color::Rgb(255, 180, 140);
+
+    // After reveal: one slow scan sweep top to bottom
+    let scan_pos = if logo_progress >= 1.0 {
+        let ticks_since = (t as f32) - (PHASE_LOGO as f32);
+        (ticks_since * 0.03).min(1.2) // single slow sweep, slightly past bottom
+    } else {
+        -1.0
+    };
 
     let mut art_lines: Vec<Line> = Vec::new();
     for (i, line) in EYE_ART.iter().enumerate() {
         if i < lines_to_show {
             let color = if i == glow_line && logo_progress < 1.0 {
-                bright
+                Color::Rgb(255, 200, 150)
             } else {
-                theme::ACCENT
+                // Lava gradient: orange top → red middle → dark crimson bottom
+                let t_pos = i as f32 / total;
+                let base_r = 240.0 - 80.0 * t_pos;
+                let base_g = 100.0 - 70.0 * t_pos;
+                let base_b = 40.0 - 20.0 * t_pos;
+
+                // Scan line: soft bright band
+                let dist = (t_pos - scan_pos).abs();
+                let glow = if dist < 0.15 {
+                    1.0 - (dist / 0.15)
+                } else {
+                    0.0
+                };
+
+                let r = (base_r + (255.0 - base_r) * glow).min(255.0) as u8;
+                let g = (base_g + (180.0 - base_g) * glow).min(255.0) as u8;
+                let b = (base_b + (80.0 - base_b) * glow).min(255.0) as u8;
+                Color::Rgb(r, g, b)
             };
             art_lines.push(Line::from(Span::styled(
                 *line,
