@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEventKind};
+use crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;

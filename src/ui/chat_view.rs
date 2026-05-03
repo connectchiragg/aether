@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
@@ -147,7 +147,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             // Direction indicator
             let direction = if is_sent {
                 let to_agent = agents.iter().find(|a| a.id == msg.to);
-                let to_name = to_agent.map(|a| a.name.clone()).unwrap_or_else(|| msg.to.clone());
+                let to_name = to_agent.map(|a| a.name.as_str()).unwrap_or(&msg.to);
                 let to_color = if is_old_turn {
                     theme::DIM
                 } else {
@@ -159,7 +159,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 ])
             } else {
                 let from_agent = agents.iter().find(|a| a.id == msg.from);
-                let from_name = from_agent.map(|a| a.name.clone()).unwrap_or_else(|| msg.from.clone());
+                let from_name = from_agent.map(|a| a.name.as_str()).unwrap_or(&msg.from);
                 let from_color = if is_old_turn {
                     theme::DIM
                 } else {
@@ -198,17 +198,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(""));
         }
 
-        // Pre-wrap lines at pane width so lines.len() == visual line count
-        let wrapped = pre_wrap_lines(lines, inner.width as usize);
-        let line_count = wrapped.len() as u16;
-        let max_scroll = line_count.saturating_sub(inner.height);
-        app.pane_max_scrolls.insert(i, max_scroll);
+        let scroll_y = *app.pane_scrolls.get(&i).unwrap_or(&0);
 
-        let scroll_y = app.pane_scrolls.get(&i).copied().unwrap_or(0).min(max_scroll);
-        app.pane_scrolls.insert(i, scroll_y);
-
-        let text = Text::from(wrapped);
+        let text = Text::from(lines);
         let para = Paragraph::new(text)
+            .wrap(Wrap { trim: false })
             .scroll((scroll_y, 0));
 
         frame.render_widget(para, inner);
@@ -312,7 +306,7 @@ fn render_session_list(frame: &mut Frame, app: &App, live: &LiveEngine, area: Re
     }
 
     let text = Text::from(lines);
-    let para = Paragraph::new(text);
+    let para = Paragraph::new(text).wrap(Wrap { trim: false });
     frame.render_widget(para, inner);
 }
 
@@ -351,57 +345,22 @@ fn render_placeholder(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(para, pad_area[1]);
 }
 
-/// Pre-wrap lines at a given width so that `result.len()` equals the visual line count.
-/// Each output Line fits within `width` characters. Spans are split at boundaries.
-fn pre_wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
-    if width == 0 {
-        return lines;
-    }
-    let mut out: Vec<Line<'static>> = Vec::new();
-
-    for line in lines {
-        // Fast path: measure total width
-        let total_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
-        if total_width <= width {
-            out.push(line);
+fn text_height_estimate(messages: &[&crate::model::Message], width: u16) -> u16 {
+    let mut height: u16 = 0;
+    for msg in messages {
+        let visible = msg.visible_content();
+        if visible.is_empty() {
             continue;
         }
-
-        // Slow path: split spans across multiple lines
-        let mut current_spans: Vec<Span<'static>> = Vec::new();
-        let mut current_width: usize = 0;
-
-        for span in line.spans {
-            let style = span.style;
-            let content: &str = &span.content;
-            let mut remaining = content;
-
-            while !remaining.is_empty() {
-                let space_left = width.saturating_sub(current_width);
-                if space_left == 0 {
-                    out.push(Line::from(std::mem::take(&mut current_spans)));
-                    current_width = 0;
-                    continue;
-                }
-
-                if remaining.len() <= space_left {
-                    current_spans.push(Span::styled(remaining.to_string(), style));
-                    current_width += remaining.len();
-                    break;
-                } else {
-                    let (chunk, rest) = remaining.split_at(space_left);
-                    current_spans.push(Span::styled(chunk.to_string(), style));
-                    out.push(Line::from(std::mem::take(&mut current_spans)));
-                    current_width = 0;
-                    remaining = rest;
-                }
-            }
+        height += 1;
+        for line in visible.lines() {
+            let line_width = line.len() as u16;
+            height += (line_width / width.max(1)) + 1;
         }
-
-        if !current_spans.is_empty() {
-            out.push(Line::from(current_spans));
+        if !msg.is_fully_revealed() {
+            height += 1;
         }
+        height += 1;
     }
-
-    out
+    height
 }

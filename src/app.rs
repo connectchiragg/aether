@@ -27,8 +27,6 @@ pub struct App {
     pub rename_input: Option<String>,
     /// Pane column ranges (x_start, x_end) set during render for mouse hit-testing
     pub pane_columns: Vec<(u16, u16)>,
-    /// Per-pane max scroll (computed during render from pre-wrapped line count)
-    pub pane_max_scrolls: HashMap<usize, u16>,
 }
 
 impl App {
@@ -45,7 +43,6 @@ impl App {
             pane_scrolls: HashMap::new(),
             rename_input: None,
             pane_columns: Vec::new(),
-            pane_max_scrolls: HashMap::new(),
         }
     }
 
@@ -62,7 +59,6 @@ impl App {
             pane_scrolls: HashMap::new(),
             rename_input: None,
             pane_columns: Vec::new(),
-            pane_max_scrolls: HashMap::new(),
         }
     }
 

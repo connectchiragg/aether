@@ -116,11 +116,10 @@ async fn run_app(
                     });
                     if let Some(pane_idx) = pane {
                         let cur = *app.pane_scrolls.get(&pane_idx).unwrap_or(&0);
-                        let max = app.pane_max_scrolls.get(&pane_idx).copied().unwrap_or(0);
                         let new_val = if up {
                             cur.saturating_sub(3)
                         } else {
-                            cur.saturating_add(3).min(max)
+                            cur.saturating_add(3)
                         };
                         app.pane_scrolls.insert(pane_idx, new_val);
                     }
@@ -301,8 +300,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Down => {
             let cur = app.scroll_offset();
-            let max = app.pane_max_scrolls.get(&app.focused_pane).copied().unwrap_or(0);
-            app.set_scroll_offset(cur.saturating_add(1).min(max));
+            app.set_scroll_offset(cur.saturating_add(1));
         }
         KeyCode::Up => {
             let cur = app.scroll_offset();
