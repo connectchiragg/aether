@@ -35,6 +35,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let columns = Layout::horizontal(constraints).split(area);
 
+    // Store pane column ranges for mouse hit-testing
+    app.pane_columns = columns.iter().map(|r| (r.x, r.x + r.width)).collect();
+
     // Get turn markers for the active session (live mode only)
     let turns: Vec<TurnMarker> = app
         .engine

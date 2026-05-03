@@ -25,6 +25,8 @@ pub struct App {
     pub pane_scrolls: HashMap<usize, u16>,
     /// Rename input state: Some(buffer) when actively renaming
     pub rename_input: Option<String>,
+    /// Pane column ranges (x_start, x_end) set during render for mouse hit-testing
+    pub pane_columns: Vec<(u16, u16)>,
 }
 
 impl App {
@@ -40,6 +42,7 @@ impl App {
             view: View::Boot,
             pane_scrolls: HashMap::new(),
             rename_input: None,
+            pane_columns: Vec::new(),
         }
     }
 
@@ -55,6 +58,7 @@ impl App {
             view: View::Boot,
             pane_scrolls: HashMap::new(),
             rename_input: None,
+            pane_columns: Vec::new(),
         }
     }
 

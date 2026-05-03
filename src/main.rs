@@ -12,7 +12,7 @@ mod ui;
 use app::{App, View};
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{KeyCode, KeyEvent, KeyModifiers},
+    event::{KeyCode, KeyEvent, KeyModifiers, EnableMouseCapture, DisableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -60,7 +60,7 @@ async fn main() -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -74,7 +74,7 @@ async fn main() -> io::Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
 
     if let Err(e) = result {
@@ -106,6 +106,23 @@ async fn run_app(
                     };
                 } else {
                     handle_key(app, key);
+                }
+            }
+            Some(AppEvent::MouseScroll { column, up }) => {
+                if app.view == View::Agent {
+                    // Find which pane the mouse is over
+                    let pane = app.pane_columns.iter().position(|(x_start, x_end)| {
+                        column >= *x_start && column < *x_end
+                    });
+                    if let Some(pane_idx) = pane {
+                        let cur = *app.pane_scrolls.get(&pane_idx).unwrap_or(&0);
+                        let new_val = if up {
+                            cur.saturating_sub(3)
+                        } else {
+                            cur.saturating_add(3)
+                        };
+                        app.pane_scrolls.insert(pane_idx, new_val);
+                    }
                 }
             }
             Some(AppEvent::Tick) => {
