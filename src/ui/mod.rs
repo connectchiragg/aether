@@ -1,4 +1,5 @@
 pub mod chat_view;
+pub mod graph_view;
 
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
@@ -28,8 +29,22 @@ const TAGLINE: &str = "see the invisible";
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view {
         View::Boot => render_boot(frame, app),
+        View::Graph => render_graph_view(frame, app),
         _ => render_main(frame, app),
     }
+}
+
+fn render_graph_view(frame: &mut Frame, app: &mut App) {
+    let chunks = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(frame.area());
+
+    render_header(frame, app, chunks[0]);
+    graph_view::render(frame, app, chunks[1]);
+    render_status_bar(frame, app, chunks[2]);
 }
 
 fn render_boot(frame: &mut Frame, app: &App) {
@@ -204,6 +219,12 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         " enter confirm  esc cancel"
     } else if app.view == View::Sessions {
         " q quit  up/down navigate  enter select  r rename"
+    } else if app.view == View::Graph {
+        if app.graph_jump_input.is_some() {
+            " type turn number  enter go  esc cancel"
+        } else {
+            " q quit  left/right turns  h first  l last  g go to turn  up/down scroll  esc back"
+        }
     } else if app.engine.is_live() {
         " q quit  left/right focus  up/down scroll  n/p session  esc back  space pause"
     } else {

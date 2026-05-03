@@ -109,7 +109,29 @@ async fn run_app(
                 }
             }
             Some(AppEvent::MouseScroll { column, up }) => {
-                if app.view == View::Agent {
+                if app.view == View::Sessions {
+                    // Mouse scroll moves the cursor in sessions list
+                    if let Some(live) = app.engine.live_engine() {
+                        let indices: Vec<usize> = live.active_sessions().map(|(i, _)| i).collect();
+                        if let Some(pos) = indices.iter().position(|&i| i == app.session_list_cursor) {
+                            let new_pos = if up {
+                                pos.saturating_sub(1)
+                            } else {
+                                (pos + 1).min(indices.len().saturating_sub(1))
+                            };
+                            app.session_list_cursor = indices[new_pos];
+                        }
+                    }
+                } else if app.view == View::Graph {
+                    // Scroll the detail panel
+                    let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
+                    let new_val = if up {
+                        cur.saturating_sub(3)
+                    } else {
+                        cur.saturating_add(3)
+                    };
+                    app.pane_scrolls.insert(usize::MAX, new_val);
+                } else if app.view == View::Agent {
                     // Find which pane the mouse is over
                     let pane = app.pane_columns.iter().position(|(x_start, x_end)| {
                         column >= *x_start && column < *x_end
@@ -225,7 +247,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                     live.active_idx = app.session_list_cursor;
                 }
                 app.session_locked = true;
-                app.view = View::Agent;
+                app.view = View::Graph;
+                app.selected_dot = 0;
                 app.focused_pane = 0;
                 app.pane_scrolls.clear();
             }
@@ -235,6 +258,83 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                     if let Some(session) = live.sessions.get(app.session_list_cursor) {
                         app.rename_input = Some(session.name.clone());
                     }
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Graph view keys
+    if app.view == View::Graph {
+        let turn_count = app.engine.live_engine()
+            .and_then(|e| e.sessions.get(e.active_idx))
+            .map(|s| s.usage.turn_count())
+            .unwrap_or(0);
+        let max_dot = turn_count.saturating_sub(1);
+
+        // Jump-to-turn input mode
+        if let Some(ref mut buf) = app.graph_jump_input {
+            match key.code {
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    buf.push(c);
+                }
+                KeyCode::Enter => {
+                    if let Ok(n) = buf.parse::<usize>() {
+                        let target = n.saturating_sub(1).min(max_dot);
+                        app.selected_dot = target;
+                        app.pane_scrolls.insert(usize::MAX, 0);
+                    }
+                    app.graph_jump_input = None;
+                }
+                KeyCode::Esc | KeyCode::Backspace => {
+                    if buf.is_empty() || key.code == KeyCode::Esc {
+                        app.graph_jump_input = None;
+                    } else {
+                        buf.pop();
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Left => {
+                app.selected_dot = app.selected_dot.saturating_sub(1);
+                app.pane_scrolls.insert(usize::MAX, 0);
+            }
+            KeyCode::Right => {
+                app.selected_dot = (app.selected_dot + 1).min(max_dot);
+                app.pane_scrolls.insert(usize::MAX, 0);
+            }
+            // First turn
+            KeyCode::Home | KeyCode::Char('h') => {
+                app.selected_dot = 0;
+                app.pane_scrolls.insert(usize::MAX, 0);
+            }
+            // Latest turn
+            KeyCode::End | KeyCode::Char('l') => {
+                app.selected_dot = max_dot;
+                app.pane_scrolls.insert(usize::MAX, 0);
+            }
+            // g = go to turn number
+            KeyCode::Char('g') => {
+                app.graph_jump_input = Some(String::new());
+            }
+            KeyCode::Down => {
+                let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
+                app.pane_scrolls.insert(usize::MAX, cur.saturating_add(1));
+            }
+            KeyCode::Up => {
+                let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
+                app.pane_scrolls.insert(usize::MAX, cur.saturating_sub(1));
+            }
+            KeyCode::Esc => {
+                app.session_locked = false;
+                app.view = View::Sessions;
+                if let Some(live) = app.engine.live_engine() {
+                    app.session_list_cursor = live.active_idx;
                 }
             }
             _ => {}

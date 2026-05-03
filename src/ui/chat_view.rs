@@ -7,17 +7,15 @@ use ratatui::{
 };
 
 use crate::app::{App, View};
-use crate::live::{LiveEngine, TurnMarker};
+use crate::live::TurnMarker;
 use crate::model::AgentStatus;
 use crate::theme;
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // Show session list view
-    if app.view == View::Sessions {
-        if let Some(live) = app.engine.live_engine() {
-            render_session_list(frame, app, live, area);
-            return;
-        }
+    if app.view == View::Sessions && app.engine.is_live() {
+        render_session_list(frame, app, area);
+        return;
     }
 
     let agents = app.engine.agents();
@@ -218,7 +216,21 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_session_list(frame: &mut Frame, app: &App, live: &LiveEngine, area: Rect) {
+fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    let live = app.engine.live_engine().unwrap();
+    let session_count = live.session_count();
+    let visible: Vec<(usize, String, usize, f64, u64, u64)> = live
+        .active_sessions()
+        .map(|(i, s)| (
+            i,
+            s.name.clone(),
+            s.usage.turn_count(),
+            s.usage.total_cost(),
+            s.usage.total_input() + s.usage.total_output(),
+            s.last_modified,
+        ))
+        .collect();
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim_style())
@@ -230,7 +242,7 @@ fn render_session_list(frame: &mut Frame, app: &App, live: &LiveEngine, area: Re
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("({}) ", live.session_count()),
+                format!("({}) ", session_count),
                 theme::subtle_style(),
             ),
         ]));
@@ -238,26 +250,33 @@ fn render_session_list(frame: &mut Frame, app: &App, live: &LiveEngine, area: Re
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let visible: Vec<(usize, &crate::live::SessionState)> = live.active_sessions().collect();
+    // Each item is 3 lines (name + detail + separator)
+    let item_height: u16 = 3;
+    let total_items = visible.len() as u16;
+    let viewport_items = inner.height / item_height;
 
-    // Layout: center the list vertically if it fits
-    let items_height: u16 = (visible.len() as u16 * 3) + 2;
-    let top_pad = if items_height < inner.height {
-        (inner.height - items_height) / 3
-    } else {
-        0
-    };
+    // Find which position in the visible list the cursor is at
+    let cursor_pos = visible.iter().position(|(i, ..)| *i == app.session_list_cursor).unwrap_or(0) as u16;
+
+    // Derive scroll from cursor position (keep cursor in viewport)
+    if cursor_pos < app.session_list_scroll / item_height {
+        app.session_list_scroll = cursor_pos * item_height;
+    } else if cursor_pos >= app.session_list_scroll / item_height + viewport_items {
+        app.session_list_scroll = (cursor_pos + 1).saturating_sub(viewport_items) * item_height;
+    }
+    // Clamp scroll to max
+    let max_scroll = (total_items * item_height).saturating_sub(inner.height);
+    app.session_list_scroll = app.session_list_scroll.min(max_scroll);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     let mut lines: Vec<Line> = Vec::new();
-    for _ in 0..top_pad {
-        lines.push(Line::from(""));
-    }
 
-    for (real_idx, session) in &visible {
+    for (real_idx, name, turn_count, cost, total_tokens, last_modified) in &visible {
         let is_selected = *real_idx == app.session_list_cursor;
-        let agent_count = session.agents.len();
-        let msg_count = session.messages.len();
-        let has_activity = !session.agents.is_empty();
 
         // Cursor and highlight
         let (cursor, name_style, detail_style) = if is_selected {
@@ -274,8 +293,9 @@ fn render_session_list(frame: &mut Frame, app: &App, live: &LiveEngine, area: Re
             )
         };
 
-        // Status indicator
-        let status_indicator = if has_activity {
+        // Status indicator: green dot = recently active, dim circle = stale
+        let recent = *last_modified > 0 && now.saturating_sub(*last_modified) < 300;
+        let status_indicator = if recent {
             Span::styled("● ", Style::default().fg(theme::ACCENT))
         } else {
             Span::styled("○ ", theme::dim_style())
@@ -297,16 +317,17 @@ fn render_session_list(frame: &mut Frame, app: &App, live: &LiveEngine, area: Re
             lines.push(Line::from(vec![
                 cursor,
                 status_indicator,
-                Span::styled(&session.name, name_style),
+                Span::styled(name.as_str(), name_style),
             ]));
         }
 
-        // Detail line with stats
-        let detail = if agent_count == 0 && msg_count == 0 {
-            "      no activity".to_string()
+        // Detail line with cost and tokens
+        let detail = if *turn_count == 0 {
+            String::new()
         } else {
-            format!("      {agent_count} agents  {msg_count} msgs  {} turns",
-                session.turns.len())
+            format!("      {}  {}  {turn_count} turns",
+                crate::model::format_cost(*cost),
+                crate::model::format_tokens(*total_tokens))
         };
         lines.push(Line::from(Span::styled(detail, detail_style)));
 
@@ -315,7 +336,9 @@ fn render_session_list(frame: &mut Frame, app: &App, live: &LiveEngine, area: Re
     }
 
     let text = Text::from(lines);
-    let para = Paragraph::new(text).wrap(Wrap { trim: false });
+    let para = Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .scroll((app.session_list_scroll, 0));
     frame.render_widget(para, inner);
 }
 

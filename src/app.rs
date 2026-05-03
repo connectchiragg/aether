@@ -10,6 +10,7 @@ pub enum View {
     Boot,
     Sessions,
     Agent,
+    Graph,
 }
 
 pub struct App {
@@ -23,6 +24,12 @@ pub struct App {
     pub view: View,
     /// Per-pane scroll offsets (preserved across pane switches)
     pub pane_scrolls: HashMap<usize, u16>,
+    /// Scroll offset for the sessions list view
+    pub session_list_scroll: u16,
+    /// Selected dot index in the graph view
+    pub selected_dot: usize,
+    /// Jump-to-turn input buffer in graph view (typing a number)
+    pub graph_jump_input: Option<String>,
     /// Rename input state: Some(buffer) when actively renaming
     pub rename_input: Option<String>,
     /// Pane column ranges (x_start, x_end) set during render for mouse hit-testing
@@ -43,6 +50,9 @@ impl App {
             boot_ticks: 0,
             view: View::Boot,
             pane_scrolls: HashMap::new(),
+            session_list_scroll: 0,
+            selected_dot: 0,
+            graph_jump_input: None,
             rename_input: None,
             pane_columns: Vec::new(),
             pane_max_scrolls: HashMap::new(),
@@ -60,6 +70,9 @@ impl App {
             boot_ticks: 0,
             view: View::Boot,
             pane_scrolls: HashMap::new(),
+            session_list_scroll: 0,
+            selected_dot: 0,
+            graph_jump_input: None,
             rename_input: None,
             pane_columns: Vec::new(),
             pane_max_scrolls: HashMap::new(),

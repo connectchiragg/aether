@@ -1,6 +1,6 @@
 pub mod event;
 
-use crate::model::{Agent, AgentStatus, Message, MessageType};
+use crate::model::{Agent, AgentStatus, Message, MessageType, UsageStats, TurnUsage, AgentCost, compute_cost};
 use crate::theme;
 use event::LiveEvent;
 use std::collections::HashMap;
@@ -19,12 +19,21 @@ pub struct SessionState {
     pub messages: Vec<Message>,
     pub turns: Vec<TurnMarker>,
     pub file_path: PathBuf,
+    pub usage: UsageStats,
     file_pos: u64,
     next_message_id: usize,
     color_idx: usize,
     partial_line: String,
     pub file_found: bool,
     pub last_modified: u64,
+    /// Whether we've already resolved the session name from native format
+    native_name_resolved: bool,
+    /// Tracks current turn's prompt for usage accumulation
+    current_turn_prompt: String,
+    /// Running total of input context
+    cumulative_context: u64,
+    /// Whether sub-agent files have been scanned
+    subagents_scanned: bool,
     /// Maps agent IDs to canonical agent IDs (for grouping same-type agents)
     id_aliases: HashMap<String, String>,
 }
@@ -53,12 +62,17 @@ impl SessionState {
             messages: Vec::new(),
             turns: Vec::new(),
             file_path,
+            usage: UsageStats::default(),
             file_pos: 0,
             next_message_id: 0,
             color_idx: 0,
             partial_line: String::new(),
             file_found: false,
             last_modified: 0,
+            native_name_resolved: false,
+            current_turn_prompt: String::new(),
+            cumulative_context: 0,
+            subagents_scanned: false,
             id_aliases: HashMap::new(),
         }
     }
@@ -133,12 +147,22 @@ impl SessionState {
         }
 
         self.file_pos = reader.stream_position().unwrap_or(self.file_pos);
+
+        // Scan sub-agents once we have turn data
+        if !self.subagents_scanned && !self.usage.turns.is_empty() {
+            self.scan_subagents();
+        }
     }
 
     fn process_line(&mut self, line: &str) {
+        // Try our hook event format first
         let event: LiveEvent = match serde_json::from_str(line) {
             Ok(e) => e,
-            Err(_) => return,
+            Err(_) => {
+                // Try native Claude Code format for session name extraction
+                self.try_native_line(line);
+                return;
+            }
         };
 
         match event {
@@ -208,6 +232,280 @@ impl SessionState {
         }
     }
 
+    /// Extract session info from native Claude Code JSONL format.
+    /// Parses names, usage data, and turn boundaries.
+    fn try_native_line(&mut self, line: &str) {
+        // Quick filter: only parse lines that might be relevant
+        let dominated_name = self.name_override.is_some();
+        let dominated_name_native = dominated_name || self.native_name_resolved;
+
+        if dominated_name_native
+            && !line.contains("\"assistant\"")
+            && !line.contains("\"user\"")
+            && !line.contains("custom-title")
+            && !line.contains("agent-name")
+        {
+            return;
+        }
+
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let line_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        match line_type {
+            "custom-title" => {
+                if !dominated_name {
+                    if let Some(title) = v.get("customTitle").and_then(|t| t.as_str()) {
+                        self.name = title.to_string();
+                        self.native_name_resolved = true;
+                    }
+                }
+            }
+            "agent-name" => {
+                if !dominated_name {
+                    if let Some(name) = v.get("agentName").and_then(|t| t.as_str()) {
+                        self.name = name.to_string();
+                        self.native_name_resolved = true;
+                    }
+                }
+            }
+            "user" => {
+                // Extract prompt for name (fallback) and as turn boundary
+                if let Some(content) = v.get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    if !dominated_name_native {
+                        let preview: String = content.chars()
+                            .filter(|c| !c.is_control())
+                            .take(40)
+                            .collect();
+                        if !preview.is_empty() {
+                            self.name = preview;
+                        }
+                    }
+                    // Start a new turn
+                    let prompt: String = content.chars()
+                        .filter(|c| !c.is_control())
+                        .collect();
+                    let timestamp = v.get("timestamp")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    self.current_turn_prompt = prompt;
+                    // Create a new turn entry
+                    self.usage.turns.push(TurnUsage {
+                        prompt: self.current_turn_prompt.clone(),
+                        timestamp,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
+                        cost: 0.0,
+                        agents: Vec::new(),
+                        cumulative_context: self.cumulative_context,
+                        context_saved: 0,
+                    });
+                }
+            }
+            "assistant" => {
+                // Accumulate usage from assistant messages
+                if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
+                    let input = usage.get("input_tokens")
+                        .and_then(|v| v.as_u64()).unwrap_or(0);
+                    let output = usage.get("output_tokens")
+                        .and_then(|v| v.as_u64()).unwrap_or(0);
+                    let cache_write = usage.get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64()).unwrap_or(0);
+                    let cache_read = usage.get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64()).unwrap_or(0);
+
+                    let model = v.get("model")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("sonnet");
+
+                    let cost = compute_cost(model, input, output, cache_write, cache_read);
+                    self.cumulative_context += input + cache_read + cache_write;
+
+                    // Add to current turn (last one)
+                    if let Some(turn) = self.usage.turns.last_mut() {
+                        turn.input_tokens += input;
+                        turn.output_tokens += output;
+                        turn.cache_read_tokens += cache_read;
+                        turn.cache_write_tokens += cache_write;
+                        turn.cost += cost;
+                        turn.cumulative_context = self.cumulative_context;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Scan sub-agent files in <session-id>/subagents/ and correlate to turns.
+    fn scan_subagents(&mut self) {
+        if self.subagents_scanned || self.usage.turns.is_empty() {
+            return;
+        }
+
+        // Sub-agent dir is next to the session file: <session-id>/subagents/
+        let session_stem = self.file_path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let subagents_dir = self.file_path.parent()
+            .map(|p| p.join(&session_stem).join("subagents"))
+            .unwrap_or_default();
+
+        if !subagents_dir.exists() {
+            self.subagents_scanned = true;
+            return;
+        }
+
+        let entries = match fs::read_dir(&subagents_dir) {
+            Ok(e) => e,
+            Err(_) => {
+                self.subagents_scanned = true;
+                return;
+            }
+        };
+
+        // Collect turn timestamps for correlation
+        // We need to find which turn each sub-agent belongs to
+        // Parse each meta.json + jsonl pair
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if !path.to_string_lossy().ends_with(".meta.json") {
+                continue;
+            }
+
+            // Read meta
+            let meta: serde_json::Value = match fs::read_to_string(&path) {
+                Ok(data) => match serde_json::from_str(&data) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            };
+
+            let agent_type = meta.get("agentType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent")
+                .to_string();
+            let description = meta.get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Read corresponding jsonl
+            let jsonl_path = path.to_string_lossy().replace(".meta.json", ".jsonl");
+            let jsonl_path = PathBuf::from(jsonl_path);
+            if !jsonl_path.exists() {
+                continue;
+            }
+
+            let mut first_ts: Option<String> = None;
+            let mut input_tokens: u64 = 0;
+            let mut output_tokens: u64 = 0;
+            let mut cache_read: u64 = 0;
+            let mut cache_write: u64 = 0;
+            let mut model = String::from("sonnet");
+            let mut agent_prompt = String::new();
+            let mut response_parts: Vec<String> = Vec::new();
+
+            if let Ok(file_content) = fs::read_to_string(&jsonl_path) {
+                for line in file_content.lines() {
+                    let v: serde_json::Value = match serde_json::from_str(line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    if first_ts.is_none() {
+                        if let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) {
+                            first_ts = Some(ts.to_string());
+                        }
+                    }
+
+                    let line_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                    if line_type == "user" && agent_prompt.is_empty() {
+                        // Extract the initial prompt given to the agent
+                        if let Some(c) = v.get("message").and_then(|m| m.get("content")) {
+                            if let Some(s) = c.as_str() {
+                                agent_prompt = s.to_string();
+                            }
+                        }
+                    }
+
+                    if line_type == "assistant" {
+                        if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+                            model = m.to_string();
+                        }
+                        if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
+                            input_tokens += usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            output_tokens += usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            cache_read += usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            cache_write += usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                        }
+                        // Extract text from assistant response
+                        if let Some(content) = v.get("message").and_then(|m| m.get("content")) {
+                            if let Some(arr) = content.as_array() {
+                                for block in arr {
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                            if !text.is_empty() {
+                                                response_parts.push(text.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let cost = compute_cost(&model, input_tokens, output_tokens, cache_write, cache_read);
+            let agent_cost = AgentCost {
+                name: if description.is_empty() { agent_type } else {
+                    format!("{}: {}", agent_type, if description.len() > 30 {
+                        format!("{}...", &description[..27])
+                    } else {
+                        description
+                    })
+                },
+                cost,
+                input_tokens,
+                output_tokens,
+                prompt: agent_prompt,
+                response_preview: response_parts.join("\n\n"),
+            };
+
+            // Correlate to turn: find the last turn that started before the agent
+            // ISO timestamps sort lexicographically
+            if let Some(ts) = &first_ts {
+                let mut best_turn_idx = 0;
+                for (i, turn) in self.usage.turns.iter().enumerate() {
+                    if !turn.timestamp.is_empty() && turn.timestamp.as_str() <= ts.as_str() {
+                        best_turn_idx = i;
+                    }
+                }
+                if let Some(turn) = self.usage.turns.get_mut(best_turn_idx) {
+                    turn.agents.push(agent_cost);
+                    turn.context_saved += input_tokens + cache_read;
+                }
+            }
+        }
+
+        self.subagents_scanned = true;
+    }
+
     fn ensure_agent(&mut self, id: &str, default_role: &str) {
         if self.agents.iter().any(|a| a.id == id) {
             return;
@@ -224,7 +522,7 @@ impl SessionState {
     }
 }
 
-/// Manages multiple sessions, scanning the threads directory.
+/// Manages multiple sessions, scanning Claude Code project directories.
 pub struct LiveEngine {
     pub sessions: Vec<SessionState>,
     pub active_idx: usize,
@@ -233,6 +531,7 @@ pub struct LiveEngine {
     /// Persisted name overrides: file stem → custom name
     name_overrides: HashMap<String, String>,
 }
+
 
 impl LiveEngine {
     pub fn new(threads_dir: PathBuf) -> Self {
@@ -282,6 +581,7 @@ impl LiveEngine {
         }
     }
 
+
     pub fn tick(&mut self, session_locked: bool) -> bool {
         // Scan for new session files every ~2 seconds (40 ticks at 50ms)
         self.scan_cooldown = self.scan_cooldown.wrapping_add(1);
@@ -320,7 +620,38 @@ impl LiveEngine {
     }
 
     fn scan_sessions(&mut self) {
-        let entries = match fs::read_dir(&self.threads_dir) {
+        // Scan the threads dir (hook-generated files)
+        self.scan_directory(&self.threads_dir.clone());
+
+        // Also scan Claude Code's native project directories
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let projects_dir = PathBuf::from(&home).join(".claude").join("projects");
+        if projects_dir.exists() {
+            // Each subdirectory is a project
+            if let Ok(projects) = fs::read_dir(&projects_dir) {
+                for project in projects.flatten() {
+                    let project_path = project.path();
+                    if project_path.is_dir() {
+                        self.scan_directory(&project_path);
+                    }
+                }
+            }
+        }
+
+        // Remove sessions whose files no longer exist
+        self.sessions.retain(|s| s.file_path.exists());
+
+        // Sort by last_modified descending so most recent sessions appear first
+        self.sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+
+        // Keep active_idx in bounds
+        if self.active_idx >= self.sessions.len() {
+            self.active_idx = self.sessions.len().saturating_sub(1);
+        }
+    }
+
+    fn scan_directory(&mut self, dir: &PathBuf) {
+        let entries = match fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
         };
@@ -330,7 +661,7 @@ impl LiveEngine {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            // Skip the helper script
+            // Skip helper scripts and subagent directories
             if path.file_name().and_then(|n| n.to_str()) == Some("tui-log.py") {
                 continue;
             }
@@ -348,14 +679,6 @@ impl LiveEngine {
                 }
                 self.sessions.push(session);
             }
-        }
-
-        // Remove sessions whose files no longer exist
-        self.sessions.retain(|s| s.file_path.exists());
-
-        // Keep active_idx in bounds
-        if self.active_idx >= self.sessions.len() {
-            self.active_idx = self.sessions.len().saturating_sub(1);
         }
     }
 
@@ -406,9 +729,9 @@ impl LiveEngine {
         self.active_sessions().count()
     }
 
-    /// Sessions that have actual content (agents or messages).
+    /// All sessions, already sorted by last_modified descending.
     pub fn active_sessions(&self) -> impl Iterator<Item = (usize, &SessionState)> {
-        self.sessions.iter().enumerate().filter(|(_, s)| !s.agents.is_empty() || !s.messages.is_empty())
+        self.sessions.iter().enumerate()
     }
 
     pub fn active_session_name(&self) -> &str {
