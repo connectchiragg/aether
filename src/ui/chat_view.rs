@@ -198,7 +198,16 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(""));
         }
 
-        let scroll_y = *app.pane_scrolls.get(&i).unwrap_or(&0);
+        // Estimate visual line count using Line::width()
+        let pane_width = inner.width.max(1) as usize;
+        let visual_height: u16 = lines.iter().map(|line| {
+            let w = line.width();
+            if w == 0 { 1 } else { ((w.saturating_sub(1)) / pane_width + 1) as u16 }
+        }).sum();
+        let max_scroll = visual_height.saturating_sub(inner.height) + 20;
+        app.pane_max_scrolls.insert(i, max_scroll);
+
+        let scroll_y = app.pane_scrolls.get(&i).copied().unwrap_or(0).min(max_scroll);
 
         let text = Text::from(lines);
         let para = Paragraph::new(text)

@@ -13,7 +13,7 @@ use crate::theme;
 
 // Boot sequence phases in ticks (50ms each)
 const REVEAL_TICKS: u16 = 30;  // 1.5s — banner character reveal
-const HOLD_TICKS: u16 = 20;    // 1.0s — hold completed banner
+const HOLD_TICKS: u16 = 10;    // 0.5s — hold completed banner
 const BOOT_DURATION: u16 = REVEAL_TICKS + HOLD_TICKS; // 2.5s total
 
 const BANNER: &[&str] = &[

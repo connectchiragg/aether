@@ -116,10 +116,11 @@ async fn run_app(
                     });
                     if let Some(pane_idx) = pane {
                         let cur = *app.pane_scrolls.get(&pane_idx).unwrap_or(&0);
+                        let max = app.pane_max_scrolls.get(&pane_idx).copied().unwrap_or(0);
                         let new_val = if up {
                             cur.saturating_sub(3)
                         } else {
-                            cur.saturating_add(3)
+                            cur.saturating_add(3).min(max)
                         };
                         app.pane_scrolls.insert(pane_idx, new_val);
                     }
@@ -131,7 +132,7 @@ async fn run_app(
                     app.boot_ticks += 1;
                     app.engine.tick(app.session_locked);
                     // After boot: always go to session list in live mode
-                    if app.boot_ticks >= 30 {
+                    if app.boot_ticks >= 40 {
                         app.view = if app.engine.is_live() {
                             View::Sessions
                         } else {
@@ -300,7 +301,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Down => {
             let cur = app.scroll_offset();
-            app.set_scroll_offset(cur.saturating_add(1));
+            let max = app.pane_max_scrolls.get(&app.focused_pane).copied().unwrap_or(0);
+            app.set_scroll_offset(cur.saturating_add(1).min(max));
         }
         KeyCode::Up => {
             let cur = app.scroll_offset();
