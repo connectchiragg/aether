@@ -13,18 +13,37 @@ use crate::app::{App, View};
 use crate::theme;
 
 // Boot sequence phases in ticks (50ms each)
-const REVEAL_TICKS: u16 = 30;  // 1.5s — banner character reveal
-const HOLD_TICKS: u16 = 10;    // 0.5s — hold completed banner
-const BOOT_DURATION: u16 = REVEAL_TICKS + HOLD_TICKS; // 2.5s total
-
-const BANNER: &[&str] = &[
-    "         _   _               ",
-    "   __ _ ___| |_| |__   ___ _ __ ",
-    "  / _` / _ \\  _| '_ \\ / -_) '_|",
-    "  \\__,_\\___/\\__|_| |_|\\___|_|  ",
-];
+const PHASE_LOGO: u16 = 20;     // 1.0s — logo reveal
+const PHASE_TEXT: u16 = 14;     // 0.7s — name + tagline
+const PHASE_HOLD: u16 = 10;     // 0.5s — hold
 
 const TAGLINE: &str = "see the invisible";
+
+// Eye-Tree of Sauron — braille art generated from image
+const EYE_ART: &[&str] = &[
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣷⣄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡀⣴⡾⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡈⣛⡘⠇⠠⢤⡄⠀⠀⠀⠀⣠⠤⠀⠚⢁⡋⢁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣹⢯⡁⠀⢀⡾⢃⣤⠀⢀⣄⠘⣦⡀⠀⢨⣽⣏⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣄⠉⠉⣿⠀⠀⣴⢏⣠⣼⣷⣶⣶⣾⣥⣈⢻⡆⠀⢠⡏⠉⠁⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠐⣿⡤⠀⢹⣷⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣾⠃⠠⣼⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣄⣶⡄⢰⢒⣶⣾⢿⣻⡯⣡⣾⣿⣿⡿⣿⣿⣿⣶⡩⣽⣻⣿⣶⣖⣲⡄⣴⣦⢠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠳⣭⣿⠛⣭⢁⣾⣿⣿⢱⣿⣿⣿⣿⡇⣻⣿⣿⣿⣿⠸⣿⣿⣦⢩⡝⢻⣯⣥⠏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⣠⠀⠀⠀⠀⠀⠀⠀⢀⣴⠶⢮⣭⣈⢿⣿⣿⠸⣿⣿⣿⣿⡇⣼⣿⣿⣿⣿⢠⣿⣿⢟⣨⣽⡶⢶⣤⠀⠀⠀⠀⠀⠀⠀⢠⡄⠀⠀",
+    "⢤⣽⣿⣿⡤⠀⠀⠀⠀⠀⠈⠉⠰⡏⢉⢻⣿⣿⣿⣗⠙⢿⣿⣿⣧⣿⣿⣿⠿⢁⣻⣿⣿⣿⢟⡉⡳⠌⠉⠀⠀⠀⠀⠀⠠⣬⣿⣳⣧⠄",
+    "⠀⠊⢿⠙⠀⠀⠀⠀⠀⠀⠘⠷⣶⠿⢿⠆⠀⠙⠻⢿⣿⣶⣾⣭⣽⣭⣽⣶⣾⣿⠿⠛⠁⠀⢾⡿⢷⡶⠞⠀⠀⠀⠀⠀⠀⠐⠹⡏⠃⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠻⣿⣿⣿⣿⣿⡿⠛⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢿⣿⣿⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⣿⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⢀⣻⣴⣦⡤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢤⣴⣴⣇⠀⠀⠀⠀",
+    "⠀⠀⠀⠠⠿⡿⣟⠂⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠒⣿⣾⠿⠄⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠁⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣼⣿⣿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠁⠈⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⣶⣿⣿⣿⣿⣿⣿⣿⣷⣶⢤⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⣄⣦⣾⡀⠀⠀⠈⠈⠻⠆⢿⢩⡟⢿⢹⡇⠰⠛⠀⠁⠀⠀⣘⣦⣶⣤⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠐⢺⣷⡿⠦⠀⠀⠀⠀⠀⠀⠈⢈⢷⡞⡈⠁⠀⠀⠀⠀⠀⢀⠼⣿⢿⡓⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠁⠀⠀⠀⠀⠀⠀⠀⠰⢼⣟⣿⠧⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠹⠋⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+];
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view {
@@ -49,75 +68,79 @@ fn render_graph_view(frame: &mut Frame, app: &mut App) {
 
 fn render_boot(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let reveal_progress = (app.boot_ticks as f32 / REVEAL_TICKS as f32).min(1.0);
-    let in_hold = app.boot_ticks >= REVEAL_TICKS;
+    let t = app.boot_ticks;
+    let logo_progress = (t as f32 / PHASE_LOGO as f32).min(1.0);
+    let text_progress = if t > PHASE_LOGO {
+        ((t - PHASE_LOGO) as f32 / PHASE_TEXT as f32).min(1.0)
+    } else {
+        0.0
+    };
 
-    // Center the banner vertically
-    let banner_height = BANNER.len() as u16 + 8;
-    let top_pad = area.height.saturating_sub(banner_height) / 2;
+    let art_height = EYE_ART.len() as u16;
+    let total_height = art_height + 6;
+    let top_pad = area.height.saturating_sub(total_height) / 2;
 
     let chunks = Layout::vertical([
         Constraint::Length(top_pad),
-        Constraint::Length(BANNER.len() as u16),
-        Constraint::Length(2), // spacing
+        Constraint::Length(art_height),
+        Constraint::Length(2),
+        Constraint::Length(1), // name
         Constraint::Length(1), // tagline
-        Constraint::Length(2), // spacing
-        Constraint::Length(1), // status line
+        Constraint::Length(2),
+        Constraint::Length(1), // status
         Constraint::Min(0),
     ])
     .split(area);
 
-    // Banner — character-by-character reveal during reveal phase, fully lit during hold
-    let total_chars: usize = BANNER.iter().map(|l| l.len()).sum();
-    let revealed = if in_hold {
-        total_chars
-    } else {
-        (total_chars as f32 * reveal_progress) as usize
-    };
-    let mut chars_shown = 0;
-    let mut banner_lines: Vec<Line> = Vec::new();
+    // Eye art — reveal line by line with glowing leading edge
+    let reveal_f = (EYE_ART.len() as f32) * logo_progress;
+    let lines_to_show = reveal_f.ceil() as usize;
+    let glow_line = if lines_to_show > 0 { lines_to_show - 1 } else { 0 };
+    let bright = Color::Rgb(255, 180, 140);
 
-    for line in BANNER {
-        let mut spans = Vec::new();
-        for ch in line.chars() {
-            if chars_shown < revealed {
-                // Glow effect: recently revealed chars are brighter
-                let style = if in_hold {
-                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
-                } else if chars_shown + 8 >= revealed {
-                    // Leading edge — bright white
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
-                };
-                spans.push(Span::styled(ch.to_string(), style));
+    let mut art_lines: Vec<Line> = Vec::new();
+    for (i, line) in EYE_ART.iter().enumerate() {
+        if i < lines_to_show {
+            let color = if i == glow_line && logo_progress < 1.0 {
+                bright
             } else {
-                spans.push(Span::styled(
-                    ch.to_string(),
-                    Style::default().fg(theme::DIM),
-                ));
-            }
-            chars_shown += 1;
+                theme::ACCENT
+            };
+            art_lines.push(Line::from(Span::styled(
+                *line,
+                Style::default().fg(color),
+            )));
+        } else {
+            art_lines.push(Line::from(""));
         }
-        banner_lines.push(Line::from(spans));
     }
 
-    let banner = Paragraph::new(banner_lines).alignment(Alignment::Center);
-    frame.render_widget(banner, chunks[1]);
+    let art_widget = Paragraph::new(art_lines).alignment(Alignment::Center);
+    frame.render_widget(art_widget, chunks[1]);
 
-    // Tagline — fades in during hold phase
-    if reveal_progress > 0.7 || in_hold {
-        let tagline = Paragraph::new(Line::from(Span::styled(
-            TAGLINE,
-            Style::default().fg(if in_hold { theme::SUBTLE } else { theme::DIM }),
+    // Name
+    if text_progress > 0.0 {
+        let name_widget = Paragraph::new(Line::from(Span::styled(
+            "A  E  T  H  E  R",
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
         )))
         .alignment(Alignment::Center);
-        frame.render_widget(tagline, chunks[3]);
+        frame.render_widget(name_widget, chunks[3]);
     }
 
-    // Status line
-    if reveal_progress > 0.3 || in_hold {
-        let dots = ".".repeat(((app.boot_ticks / 4) % 4) as usize + 1);
+    // Tagline
+    if text_progress > 0.5 {
+        let tagline = Paragraph::new(Line::from(Span::styled(
+            TAGLINE,
+            Style::default().fg(theme::SUBTLE),
+        )))
+        .alignment(Alignment::Center);
+        frame.render_widget(tagline, chunks[4]);
+    }
+
+    // Status
+    if logo_progress > 0.2 {
+        let dots = ".".repeat(((t / 4) % 4) as usize + 1);
         let status_text = if app.engine.is_live() {
             format!("scanning for sessions{dots}")
         } else {
@@ -128,7 +151,7 @@ fn render_boot(frame: &mut Frame, app: &App) {
             Style::default().fg(theme::DIM),
         )))
         .alignment(Alignment::Center);
-        frame.render_widget(status, chunks[5]);
+        frame.render_widget(status, chunks[6]);
     }
 }
 
@@ -159,8 +182,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let pause_indicator = if app.paused { "  paused" } else { "" };
 
     let mut spans = vec![
-        Span::styled(" aether ", theme::header_title_style()),
-        Span::styled(" ", theme::dim_style()),
+        Span::styled(" ◉ ", Style::default().fg(Color::Rgb(200, 30, 30)).add_modifier(Modifier::BOLD)),
+        Span::styled("aether ", theme::header_title_style()),
     ];
 
     if app.view == View::Sessions {
