@@ -21,6 +21,8 @@ pub struct App {
     pub session_locked: bool,
     pub session_list_cursor: usize,
     pub boot_ticks: u16,
+    /// Global tick counter (increments every frame, wraps)
+    pub tick: u32,
     pub view: View,
     /// Per-pane scroll offsets (preserved across pane switches)
     pub pane_scrolls: HashMap<usize, u16>,
@@ -48,6 +50,7 @@ impl App {
             session_locked: true,
             session_list_cursor: 0,
             boot_ticks: 0,
+            tick: 0,
             view: View::Boot,
             pane_scrolls: HashMap::new(),
             session_list_scroll: 0,
@@ -68,6 +71,7 @@ impl App {
             session_locked: false,
             session_list_cursor: 0,
             boot_ticks: 0,
+            tick: 0,
             view: View::Boot,
             pane_scrolls: HashMap::new(),
             session_list_scroll: 0,

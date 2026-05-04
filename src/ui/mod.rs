@@ -194,72 +194,137 @@ fn render_main(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    let agent_count = app.engine.agents().len();
+    use crate::model::{format_cost, format_tokens};
+
     let status = app.engine.status_text();
 
-    let status_style = match status {
-        "watching" => Style::default().fg(theme::ACCENT),
-        "waiting for sessions" => Style::default().fg(theme::WARM),
-        "done" => Style::default().fg(theme::DIM),
-        _ => Style::default().fg(Color::White),
+    // Pulsing live dot: strong sinusoidal cycle (~1.5s period at 50ms tick)
+    let pulse_style = if app.paused {
+        Style::default().fg(theme::DIM)
+    } else {
+        let phase = (app.tick % 30) as f64 / 30.0 * std::f64::consts::TAU;
+        let bright = phase.sin() * 0.5 + 0.5; // 0.0 → 1.0
+        let r = (40.0 + bright * 215.0) as u8;   // 40 → 255
+        let g = (10.0 + bright * 50.0) as u8;    // 10 → 60
+        let b = (10.0 + bright * 40.0) as u8;    // 10 → 50
+        Style::default().fg(Color::Rgb(r, g, b))
     };
 
-    let pause_indicator = if app.paused { "  paused" } else { "" };
-
-    let mut spans = vec![
-        Span::styled(" ◉ ", Style::default().fg(Color::Rgb(200, 30, 30)).add_modifier(Modifier::BOLD)),
-        Span::styled("aether ", theme::header_title_style()),
+    // ── Left: braille eye + sweeping "aether" ──
+    let mut left_spans: Vec<Span> = vec![
+        Span::styled(" ⠑⠽⠑", pulse_style),
+        Span::raw(" "),
     ];
 
+    // "aether" with a smooth left-to-right color sweep using sine easing
+    let word = "aether";
+    let t = app.tick as f64 * 0.02; // continuous time, ~50ms per tick
+    let sweep_pos = t.sin() * 0.5 + 0.5; // smooth 0→1→0 oscillation, ~3.1s cycle
+    for (i, ch) in word.chars().enumerate() {
+        let char_pos = i as f64 / (word.len() - 1) as f64;
+        let dist = (char_pos - sweep_pos).abs();
+        // Smooth gaussian-like falloff
+        let glow = (-dist * dist * 12.0).exp();
+        let r = (130.0 + glow * 125.0) as u8;
+        let g = (40.0 + glow * 50.0) as u8;
+        let b = (35.0 + glow * 35.0) as u8;
+        let style = Style::default().fg(Color::Rgb(r, g, b)).add_modifier(Modifier::BOLD);
+        left_spans.push(Span::styled(ch.to_string(), style));
+    }
+
+    left_spans.push(Span::styled(" │", Style::default().fg(theme::DIM)));
+
+    // ── Center: contextual info ──
     if app.view == View::Sessions {
-        // Session list view — just show status
-        spans.push(Span::styled(status, status_style));
-    } else if let Some(live) = app.engine.live_engine() {
-        let session_count = live.session_count();
-        let session_name = live.active_session_name();
-
-        if session_count > 1 {
-            spans.push(Span::styled(
-                format!("[{}/{}] ", live.active_idx + 1, session_count),
-                Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        spans.push(Span::styled(
-            session_name,
-            Style::default().fg(theme::PRIMARY),
+        let session_count = app.engine.live_engine()
+            .map(|l| l.session_count())
+            .unwrap_or(0);
+        left_spans.push(Span::styled(
+            format!(" {} sessions", session_count),
+            Style::default().fg(theme::SUBTLE),
         ));
-        spans.push(Span::styled("  ", theme::dim_style()));
-        spans.push(Span::styled(status, status_style));
+        left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::DIM)));
+        let status_style = if status == "watching" {
+            Style::default().fg(theme::ACCENT)
+        } else {
+            Style::default().fg(theme::WARM)
+        };
+        left_spans.push(Span::styled("● ", pulse_style));
+        left_spans.push(Span::styled(status, status_style));
+    } else if let Some(live) = app.engine.live_engine() {
+        let session_name = live.active_session_name();
+        let session = live.sessions.get(live.active_idx);
+        let session_count = live.session_count();
 
-        if agent_count > 0 {
-            spans.push(Span::styled(
-                format!("  {agent_count} agents"),
-                theme::subtle_style(),
+        // Session position
+        left_spans.push(Span::styled(
+            format!(" {}/{}", live.active_idx + 1, session_count),
+            Style::default().fg(theme::SUBTLE),
+        ));
+        left_spans.push(Span::styled(" │", Style::default().fg(theme::DIM)));
+
+        // Session name
+        let name_display: String = session_name.chars().take(40).collect();
+        left_spans.push(Span::styled(
+            format!(" {}", name_display),
+            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+        ));
+
+        // Session cost & tokens (right side)
+        if let Some(s) = session {
+            let total_cost = s.usage.total_cost();
+            let total_in: u64 = s.usage.turns.iter().map(|t| t.input_tokens).sum();
+            let total_out: u64 = s.usage.turns.iter().map(|t| t.output_tokens).sum();
+            let turn_count = s.usage.turn_count();
+
+            left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::DIM)));
+            left_spans.push(Span::styled("● ", pulse_style));
+            left_spans.push(Span::styled(
+                format!("{}", format_cost(total_cost)),
+                Style::default().fg(theme::WARM),
+            ));
+            left_spans.push(Span::styled(
+                format!("  ↑{} ↓{}  {} turns",
+                    format_tokens(total_in),
+                    format_tokens(total_out),
+                    turn_count,
+                ),
+                Style::default().fg(theme::SUBTLE),
             ));
         }
     } else {
-        spans.push(Span::styled(
-            "demo",
-            Style::default().fg(theme::PRIMARY),
-        ));
-        spans.push(Span::styled("  ", theme::dim_style()));
-        spans.push(Span::styled(status, status_style));
+        left_spans.push(Span::styled(" demo", Style::default().fg(theme::PRIMARY)));
+        left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::DIM)));
+        left_spans.push(Span::styled(status, Style::default().fg(theme::ACCENT)));
     }
 
-    spans.push(Span::styled(
-        pause_indicator,
-        Style::default().fg(theme::WARM),
-    ));
+    if app.paused {
+        left_spans.push(Span::styled("  ⏸ paused", Style::default().fg(theme::WARM)));
+    }
 
-    let title_line = Line::from(spans);
+    let title_line = Line::from(left_spans);
 
+    // Render as a styled block with top border accent
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(theme::dim_style())
+        .border_style(Style::default().fg(theme::DIM))
         .title(title_line);
 
     frame.render_widget(block, area);
+
+    // Draw accent line on top border
+    let top_y = area.y;
+    let width = area.width.min(8);
+    for x in area.x..area.x + width {
+        let frac = (x - area.x) as f64 / width as f64;
+        let r = (255.0 - frac * 95.0) as u8;  // 255 → 160
+        let g = (90.0 - frac * 60.0) as u8;   // 90 → 30
+        let b = (70.0 - frac * 50.0) as u8;   // 70 → 20
+        let cell = frame.buffer_mut().cell_mut((x, top_y));
+        if let Some(cell) = cell {
+            cell.set_style(Style::default().fg(Color::Rgb(r, g, b)));
+        }
+    }
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {

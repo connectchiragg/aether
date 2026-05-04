@@ -149,6 +149,7 @@ async fn run_app(
                 }
             }
             Some(AppEvent::Tick) => {
+                app.tick = app.tick.wrapping_add(1);
                 // Advance boot animation
                 if app.view == View::Boot {
                     app.boot_ticks += 1;
