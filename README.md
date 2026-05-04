@@ -28,9 +28,6 @@ curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/instal
 aether watch
 ```
 
-### 3. Enable metrics (optional)
-
-Inside any Claude Code session, type `/aether` to enable per-turn quality scoring (friction, hallucination, confidence, acceptance, performance) powered by Haiku. Type `/aether` again to disable.
 
 ## Uninstall
 

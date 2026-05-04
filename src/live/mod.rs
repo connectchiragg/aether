@@ -660,9 +660,11 @@ impl LiveEngine {
             self.scan_sessions();
         }
 
-        // Poll all sessions for new data
-        for session in &mut self.sessions {
-            session.poll_file();
+        // Poll active session every tick, others every ~5 seconds
+        for (i, session) in self.sessions.iter_mut().enumerate() {
+            if i == self.active_idx || self.scan_cooldown % 100 == 0 {
+                session.poll_file();
+            }
         }
 
         // Auto-switch to most recently modified session (only when not locked)

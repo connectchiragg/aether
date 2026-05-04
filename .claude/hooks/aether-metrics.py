@@ -8,27 +8,48 @@ import json, sys, os, time, fcntl, subprocess, threading
 
 RECAP_DIR = os.path.expanduser("~/.claude/.aether-recaps")
 
-EVAL_PROMPT_TEMPLATE = """You are evaluating a single turn of an AI coding assistant conversation.
+EVAL_PROMPT_TEMPLATE = """You are scoring one turn of a human-AI coding session. Use the recap for context but judge ONLY the current turn.
 
-Previous context recap:
+CONTEXT (prior turns summary):
 {recap}
 
-User prompt:
+USER PROMPT:
 {prompt}
 
-Assistant response (truncated):
+ASSISTANT RESPONSE:
 {response}
 
-Score this turn on these 5 metrics, each from 0.0 to 1.0:
-- friction: Was this a correction/complaint/redo? 0.0=smooth, 1.0=rejection
-- hallucination: Did assistant fabricate facts/code/claims? 0.0=grounded, 1.0=fabricated
-- confidence: How decisive is the assistant? 0.0=uncertain, 1.0=assured
-- acceptance: Did assistant follow user intent? 0.0=ignored, 1.0=aligned
-- performance: Output quality? 0.0=broken, 1.0=excellent
+Score each metric 0.0 to 1.0:
 
-Also write a recap (max 80 words) of what happened this turn.
+friction: Did the user correct, reject, or express frustration with the assistant?
+  0.0 = user continued naturally or gave new instructions
+  0.3 = mild redirection ("not that, try X")
+  0.7 = clear rejection ("revert", "wrong", "no")
+  1.0 = user is frustrated or assistant ignored prior feedback
 
-Respond with ONLY this JSON, nothing else:
+hallucination: Did the assistant claim to do something it didn't, reference code/files that don't exist, or state unverified facts?
+  0.0 = all claims are grounded in visible evidence (tool calls, file reads, actual output)
+  0.5 = vague claims without evidence but plausible
+  1.0 = fabricated actions, nonexistent references, or false assertions
+
+confidence: How decisive and clear is the assistant in its approach?
+  0.0 = hedging, asking unnecessary clarifications, indecisive
+  0.5 = reasonable caution with clear direction
+  1.0 = direct, decisive, takes ownership
+
+acceptance: How well did the assistant understand and execute the user's intent?
+  0.0 = completely misunderstood or ignored the request
+  0.5 = partially addressed but missed key aspects
+  1.0 = precisely addressed what the user asked for
+
+performance: Quality of the deliverable (code, explanation, analysis)?
+  0.0 = broken, incorrect, or useless output
+  0.5 = functional but with issues or unnecessary complexity
+  1.0 = clean, correct, well-structured output
+
+Write a recap (max 60 words) summarizing what happened and any notable patterns.
+
+Respond with ONLY valid JSON:
 {{"friction":0.0,"hallucination":0.0,"confidence":0.0,"acceptance":0.0,"performance":0.0,"recap":"..."}}"""
 
 
