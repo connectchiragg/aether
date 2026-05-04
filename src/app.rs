@@ -38,6 +38,12 @@ pub struct App {
     pub pane_columns: Vec<(u16, u16)>,
     /// Per-pane max scroll (estimated during render)
     pub pane_max_scrolls: HashMap<usize, u16>,
+    /// Which metric the graph plots: 0=cost(default), 1=friction, 2=hallucination, 3=confidence, 4=acceptance, 5=performance
+    pub graph_metric: u8,
+    /// Graph zoom level: positive = zoom in (fewer dots), negative = zoom out (more dots, no labels)
+    pub graph_zoom: i8,
+    /// Expanded view: 'u' = full user prompt, 'a' = full agent response, None = normal
+    pub expanded_view: Option<char>,
 }
 
 impl App {
@@ -59,6 +65,9 @@ impl App {
             rename_input: None,
             pane_columns: Vec::new(),
             pane_max_scrolls: HashMap::new(),
+            graph_metric: 0,
+            graph_zoom: 0i8,
+            expanded_view: None,
         }
     }
 
@@ -80,6 +89,9 @@ impl App {
             rename_input: None,
             pane_columns: Vec::new(),
             pane_max_scrolls: HashMap::new(),
+            graph_metric: 0,
+            graph_zoom: 0i8,
+            expanded_view: None,
         }
     }
 

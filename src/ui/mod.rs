@@ -328,45 +328,35 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let help = if app.rename_input.is_some() {
-        " enter confirm  esc cancel"
+    // Each entry: (key, description)
+    let items: &[(&str, &str)] = if app.rename_input.is_some() {
+        &[("enter", "confirm"), ("esc", "cancel")]
     } else if app.view == View::Sessions {
-        " q quit  up/down navigate  enter select  r rename"
+        &[("↑↓", "navigate"), ("enter", "open"), ("r", "rename"), ("q", "quit")]
     } else if app.view == View::Graph {
         if app.graph_jump_input.is_some() {
-            " type turn number  enter go  esc cancel"
+            &[("0-9", "turn #"), ("enter", "go"), ("esc", "cancel")]
         } else {
-            " q quit  left/right turns  h first  l last  g go to turn  up/down scroll  esc back"
+            &[
+                ("←→", "turns"), ("↑↓", "session"), ("h/l", "first/last turn"),
+                ("g", "goto turn"), ("c", "change graph"), ("+/-", "zoom in/out graph"),
+                ("e", "expand/collapse"), ("esc", "back"), ("q", "quit"),
+            ]
         }
     } else if app.engine.is_live() {
-        " q quit  left/right focus  up/down scroll  n/p session  esc back  space pause"
+        &[("←→", "focus"), ("↑↓", "scroll"), ("n/p", "session"), ("space", "pause"), ("esc", "back"), ("q", "quit")]
     } else {
-        " q quit  left/right focus  up/down scroll  space pause  r reset"
+        &[("←→", "focus"), ("↑↓", "scroll"), ("space", "pause"), ("r", "reset"), ("q", "quit")]
     };
 
-    let spans = help
-        .split("  ")
-        .enumerate()
-        .flat_map(|(i, part)| {
-            let mut result = Vec::new();
-            if i > 0 {
-                result.push(Span::styled("  ", theme::dim_style()));
-            }
-            if let Some((key, desc)) = part.trim().split_once(' ') {
-                result.push(Span::styled(
-                    key.to_string(),
-                    Style::default().fg(theme::ACCENT),
-                ));
-                result.push(Span::styled(
-                    format!(" {desc}"),
-                    theme::subtle_style(),
-                ));
-            } else {
-                result.push(Span::styled(part.to_string(), theme::subtle_style()));
-            }
-            result
-        })
-        .collect::<Vec<_>>();
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, (key, desc)) in items.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" │ ", Style::default().fg(theme::DIM)));
+        }
+        spans.push(Span::styled(format!(" {}", key), Style::default().fg(theme::ACCENT)));
+        spans.push(Span::styled(format!(" {}", desc), theme::subtle_style()));
+    }
 
     let bar = Paragraph::new(Line::from(spans));
     frame.render_widget(bar, area);

@@ -123,12 +123,21 @@ Print:
 Then STOP.
 SKILL_EOF
 
+# Install metrics hook
+HOOKS_DIR="$HOME/.claude/hooks"
+info "Installing metrics hook..."
+mkdir -p "$HOOKS_DIR"
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/master/.claude/hooks/aether-metrics.py" \
+  -o "${HOOKS_DIR}/aether-metrics.py.off" 2>/dev/null || true
+chmod +x "${HOOKS_DIR}/aether-metrics.py.off" 2>/dev/null || true
+
 echo ""
 info "Installation complete!"
 echo ""
 dim "  Binary:  ${INSTALL_DIR}/aether"
 dim "  Skill:   ${SKILL_DIR}/SKILL.md"
+dim "  Hook:    ${HOOKS_DIR}/aether-metrics.py.off (inactive until /aether is run)"
 echo ""
 echo -e "  Run ${BOLD}aether watch${NC} to start observing Claude Code sessions."
-echo -e "  Use ${BOLD}/aether${NC} in Claude Code to toggle agent logging."
+echo -e "  Use ${BOLD}/aether${NC} in Claude Code to enable agent logging + quality metrics."
 echo ""

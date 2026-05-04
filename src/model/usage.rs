@@ -19,6 +19,26 @@ pub struct TurnUsage {
     pub cumulative_context: u64,
     /// Tokens processed by sub-agents (context that didn't enter parent)
     pub context_saved: u64,
+    /// Per-turn quality metrics from Haiku analysis
+    pub metrics: Option<TurnMetrics>,
+    /// Raw assistant response text (for Haiku analysis)
+    pub response_text: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct TurnMetrics {
+    /// Was this turn a correction/friction point? (0.0 = smooth, 1.0 = high friction)
+    pub friction: f32,
+    /// Likelihood of hallucinated content (0.0 = grounded, 1.0 = hallucinated)
+    pub hallucination: f32,
+    /// Agent's apparent confidence in its work (0.0 = uncertain, 1.0 = confident)
+    pub confidence: f32,
+    /// How well the agent accepted/followed user intent (0.0 = ignored, 1.0 = perfect)
+    pub acceptance: f32,
+    /// Quality of output/deliverable (0.0 = poor, 1.0 = excellent)
+    pub performance: f32,
+    /// Rolling recap for next turn's context
+    pub recap: String,
 }
 
 #[derive(Clone)]

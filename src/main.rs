@@ -349,6 +349,22 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Char('g') => {
                 app.graph_jump_input = Some(String::new());
             }
+            // c = cycle graph metric
+            KeyCode::Char('c') => {
+                app.graph_metric = (app.graph_metric + 1) % 6;
+            }
+            // - zoom out (3 levels), + zoom back in
+            KeyCode::Char('-') => {
+                app.graph_zoom = (app.graph_zoom - 1).max(-3);
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                app.graph_zoom = (app.graph_zoom + 1).min(0);
+            }
+            // e = expand/collapse all content (prompt + response + agent)
+            KeyCode::Char('e') => {
+                app.expanded_view = if app.expanded_view.is_some() { None } else { Some('e') };
+                app.pane_scrolls.insert(usize::MAX, 0);
+            }
             KeyCode::Down => {
                 // Switch to next session
                 if let Some(live) = app.engine.live_engine_mut() {

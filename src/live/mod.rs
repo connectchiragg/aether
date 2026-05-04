@@ -1,6 +1,6 @@
 pub mod event;
 
-use crate::model::{Agent, AgentStatus, Message, MessageType, UsageStats, TurnUsage, AgentCost, compute_cost};
+use crate::model::{Agent, AgentStatus, Message, MessageType, UsageStats, TurnUsage, TurnMetrics, AgentCost, compute_cost};
 use crate::theme;
 use event::LiveEvent;
 use std::collections::HashMap;
@@ -244,6 +244,7 @@ impl SessionState {
             && !line.contains("\"user\"")
             && !line.contains("custom-title")
             && !line.contains("ai-title")
+            && !line.contains("turn-metrics")
         {
             return;
         }
@@ -328,6 +329,8 @@ impl SessionState {
                         agents: Vec::new(),
                         cumulative_context: self.cumulative_context,
                         context_saved: 0,
+                        metrics: None,
+                        response_text: String::new(),
                     });
                 }
             }
@@ -359,6 +362,43 @@ impl SessionState {
                         turn.cost += cost;
                         turn.cumulative_context = self.cumulative_context;
                     }
+                }
+                // Capture assistant response text for metrics analysis
+                if let Some(content) = v.get("message").and_then(|m| m.get("content")) {
+                    if let Some(arr) = content.as_array() {
+                        for block in arr {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    if let Some(turn) = self.usage.turns.last_mut() {
+                                        if !turn.response_text.is_empty() {
+                                            turn.response_text.push('\n');
+                                        }
+                                        // Keep first 2000 chars per turn for analysis
+                                        let remaining = 2000usize.saturating_sub(turn.response_text.len());
+                                        if remaining > 0 {
+                                            turn.response_text.extend(text.chars().take(remaining));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "turn-metrics" => {
+                // Metrics written by the aether Stop hook.
+                // Match to the last turn that doesn't have metrics yet.
+                let metrics = TurnMetrics {
+                    friction: v.get("friction").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    hallucination: v.get("hallucination").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    confidence: v.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    acceptance: v.get("acceptance").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    performance: v.get("performance").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    recap: v.get("recap").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                };
+                // Find last turn without metrics (the one this score belongs to)
+                if let Some(turn) = self.usage.turns.iter_mut().rev().find(|t| t.metrics.is_none()) {
+                    turn.metrics = Some(metrics);
                 }
             }
             _ => {}
@@ -641,6 +681,7 @@ impl LiveEngine {
 
         false
     }
+
 
     pub fn reset(&mut self) {
         if let Some(session) = self.sessions.get_mut(self.active_idx) {
