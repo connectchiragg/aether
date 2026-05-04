@@ -38,6 +38,8 @@ enum Commands {
     },
     /// Run a scripted demo scenario
     Demo,
+    /// Set up Claude Code skill and hooks
+    Setup,
 }
 
 fn default_threads_dir() -> PathBuf {
@@ -50,11 +52,15 @@ async fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
     let mut app = match cli.command {
+        Some(Commands::Setup) => {
+            return run_setup();
+        }
         Some(Commands::Watch { dir }) => {
             let threads_dir = dir.unwrap_or_else(default_threads_dir);
             App::new_live(threads_dir)
         }
-        Some(Commands::Demo) | None => App::new_mock(),
+        Some(Commands::Demo) => App::new_mock(),
+        None => App::new_live(default_threads_dir()),
     };
 
     // Setup terminal
@@ -80,6 +86,81 @@ async fn main() -> io::Result<()> {
     if let Err(e) = result {
         eprintln!("Error: {e}");
     }
+
+    Ok(())
+}
+
+fn run_setup() -> io::Result<()> {
+    use std::process::Command;
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let skill_dir = format!("{}/.claude/skills/aether", home);
+    let hooks_dir = format!("{}/.claude/hooks", home);
+    let settings_path = format!("{}/.claude/settings.json", home);
+
+    println!("\x1b[32;1m==>\x1b[0m Setting up aether for Claude Code...");
+
+    // Create skill directory and download SKILL.md
+    std::fs::create_dir_all(&skill_dir)?;
+    let status = Command::new("curl")
+        .args(["-fsSL",
+            "https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/skills/aether/SKILL.md",
+            "-o", &format!("{}/SKILL.md", skill_dir)])
+        .status();
+    if status.map(|s| s.success()).unwrap_or(false) {
+        println!("\x1b[32;1m==>\x1b[0m Skill installed");
+    } else {
+        eprintln!("\x1b[31mFailed to download skill\x1b[0m");
+    }
+
+    // Download metrics hook (inactive)
+    std::fs::create_dir_all(&hooks_dir)?;
+    let hook_path = format!("{}/aether-metrics.py.off", hooks_dir);
+    let hook_active = format!("{}/aether-metrics.py", hooks_dir);
+    if !std::path::Path::new(&hook_path).exists() && !std::path::Path::new(&hook_active).exists() {
+        let status = Command::new("curl")
+            .args(["-fsSL",
+                "https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/hooks/aether-metrics.py",
+                "-o", &hook_path])
+            .status();
+        if status.map(|s| s.success()).unwrap_or(false) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+            }
+            println!("\x1b[32;1m==>\x1b[0m Metrics hook installed (inactive)");
+        }
+    }
+
+    // Register Stop hook in settings.json
+    let _ = Command::new("python3")
+        .arg("-c")
+        .arg(format!(r#"
+import json, os
+path = "{}"
+settings = {{}}
+if os.path.exists(path):
+    try:
+        with open(path) as f: settings = json.load(f)
+    except: pass
+hooks = settings.get("hooks", {{}})
+stop = hooks.get("Stop", [])
+cmd = "python3 ~/.claude/hooks/aether-metrics.py"
+if not any(cmd in h.get("command","") for e in stop for h in e.get("hooks",[])):
+    stop.append({{"matcher":"","hooks":[{{"type":"command","command":cmd}}]}})
+    hooks["Stop"] = stop
+    settings["hooks"] = hooks
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path,"w") as f: json.dump(settings, f, indent=2)
+"#, settings_path))
+        .status();
+    println!("\x1b[32;1m==>\x1b[0m Stop hook registered");
+
+    println!();
+    println!("\x1b[32;1m==>\x1b[0m Setup complete!");
+    println!("  Run \x1b[1maether\x1b[0m to start watching sessions");
+    println!("  Type \x1b[1m/aether\x1b[0m in Claude Code to enable metrics");
 
     Ok(())
 }
