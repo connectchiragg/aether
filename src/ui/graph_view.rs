@@ -410,8 +410,9 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             }
             lines.push(Line::from(""));
         }
-    } else if selected >= total_turns.saturating_sub(2) && turn.output_tokens > 0 {
-        // Only the last 2 turns can be "analyzing" — everything else is untracked
+    } else if selected >= total_turns.saturating_sub(2) && turn.output_tokens > 0
+        && turns.iter().any(|t| t.metrics.is_some()) {
+        // Show "analyzing" only if this session has metrics (hook is active)
         let dot_count = ((app.tick / 8) % 4) as usize;
         let dots = ".".repeat(dot_count + 1);
         let phase = (app.tick % 20) as f64 / 20.0 * std::f64::consts::TAU;
