@@ -8,11 +8,20 @@ A terminal UI that watches Claude Code sessions in real-time, showing token usag
 
 ### 1. Install
 
+**Homebrew (macOS/Linux):**
+
+```bash
+brew tap connectchiragg/tap
+brew install aether
+```
+
+**Or via script:**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/install.sh | bash
 ```
 
-This installs the `aether` binary, the `/aether` Claude Code skill, and the metrics hook.
+Both install the `aether` binary and set up the `/aether` Claude Code skill.
 
 ### 2. Enable metrics (optional)
 
