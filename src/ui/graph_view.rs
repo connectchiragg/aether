@@ -72,7 +72,7 @@ fn render_empty(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim_style())
-        .title(Span::styled(" cost explorer ", Style::default().fg(theme::ACCENT)));
+        .title(Span::styled(" cost explorer ", Style::default().fg(theme::accent())));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let msg = Paragraph::new(Line::from(Span::styled("no usage data yet", theme::subtle_style())))
@@ -110,7 +110,7 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
     let metric_name = METRIC_NAMES[metric_idx];
 
     let mut title_spans = vec![
-        Span::styled(format!(" {} ", metric_name), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {} ", metric_name), Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
     ];
 
     if graph_metric == 0 {
@@ -127,7 +127,7 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
     title_spans.push(Span::styled("── ", theme::dim_style()));
     for (i, name) in METRIC_NAMES.iter().enumerate() {
         if i as u8 == graph_metric {
-            title_spans.push(Span::styled(format!("[{}]", name), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)));
+            title_spans.push(Span::styled(format!("[{}]", name), Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)));
         } else {
             title_spans.push(Span::styled(format!(" {} ", name), theme::dim_style()));
         }
@@ -224,7 +224,7 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
         let has_agents = !visible_turns[i].agents.is_empty();
         let ch = if has_agents { '◆' } else { '●' };
         let style = if is_selected {
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)
         } else {
             let frac = i as f64 / num_visible.max(1) as f64;
             Style::default().fg(crimson_gradient(frac))
@@ -249,7 +249,7 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
             true
         };
         if let Some(&(x, _)) = dot_positions.get(selected.saturating_sub(start_idx)) {
-            place_label(&mut grid, &mut occupied, x, &format!("{}", selected + 1), Style::default().fg(theme::ACCENT));
+            place_label(&mut grid, &mut occupied, x, &format!("{}", selected + 1), Style::default().fg(theme::accent()));
         }
         for (i, &(x, _)) in dot_positions.iter().enumerate() {
             let actual_idx = start_idx + i;
@@ -260,7 +260,7 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
     }
 
     if let Some(&(x, y)) = dot_positions.get(selected.saturating_sub(start_idx)) {
-        if y > 0 && x < graph_width { grid[y - 1][x] = ('▼', Style::default().fg(theme::ACCENT)); }
+        if y > 0 && x < graph_width { grid[y - 1][x] = ('▼', Style::default().fg(theme::accent())); }
     }
 
     let lines: Vec<Line> = grid.into_iter().map(|row| {
@@ -274,7 +274,7 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
     let total_turns = turns.len();
 
     let mut title_spans = vec![
-        Span::styled(format!(" Turn {} ", selected + 1), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" Turn {} ", selected + 1), Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
         Span::styled("── ", theme::dim_style()),
         Span::styled(format_cost(turn.cost), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
     ];
@@ -297,12 +297,12 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
     // ── PROMPT ──
     let show_full_prompt = app.expanded_view.is_some();
     lines.push(Line::from(vec![
-        Span::styled("  ▸ ", Style::default().fg(theme::ACCENT)),
-        Span::styled("PROMPT", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled("  ▸ ", Style::default().fg(theme::accent())),
+        Span::styled("PROMPT", Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
         if !show_full_prompt && turn.prompt.len() > PROMPT_PREVIEW_LEN {
-            Span::styled("  (e to expand)", Style::default().fg(theme::DIM))
+            Span::styled("  (e to expand)", Style::default().fg(theme::dim()))
         } else if show_full_prompt {
-            Span::styled("  (e to collapse)", Style::default().fg(theme::DIM))
+            Span::styled("  (e to collapse)", Style::default().fg(theme::dim()))
         } else {
             Span::raw("")
         },
@@ -329,12 +329,12 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
     if !turn.response_text.is_empty() {
         let show_full = app.expanded_view.is_some();
         lines.push(Line::from(vec![
-            Span::styled("  ◂ ", Style::default().fg(theme::PRIMARY)),
-            Span::styled("RESPONSE", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+            Span::styled("  ◂ ", Style::default().fg(theme::primary())),
+            Span::styled("RESPONSE", Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)),
             if !show_full && turn.response_text.len() > AGENT_RESPONSE_PREVIEW_LEN {
-                Span::styled("  (e to expand)", Style::default().fg(theme::DIM))
+                Span::styled("  (e to expand)", Style::default().fg(theme::dim()))
             } else if show_full {
-                Span::styled("  (e to collapse)", Style::default().fg(theme::DIM))
+                Span::styled("  (e to collapse)", Style::default().fg(theme::dim()))
             } else { Span::raw("") },
         ]));
         let text = if show_full {
@@ -346,7 +346,7 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
         for chunk in word_wrap(&text, wrap_width) {
             lines.push(Line::from(vec![
                 Span::styled("    ", Style::default()),
-                Span::styled(chunk, Style::default().fg(theme::SUBTLE)),
+                Span::styled(chunk, Style::default().fg(theme::subtle())),
             ]));
         }
         lines.push(Line::from(""));
@@ -355,9 +355,9 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
     // ── STATS ──
     lines.push(Line::from(vec![
         Span::styled("  cost    ", theme::dim_style()),
-        Span::styled(format_cost(turn.cost), Style::default().fg(theme::ACCENT)),
+        Span::styled(format_cost(turn.cost), Style::default().fg(theme::accent())),
         Span::styled("     context  ", theme::dim_style()),
-        Span::styled(format!("↑{} cumulative", format_tokens(turn.cumulative_context)), Style::default().fg(theme::PRIMARY)),
+        Span::styled(format!("↑{} cumulative", format_tokens(turn.cumulative_context)), Style::default().fg(theme::primary())),
         if turn.context_saved > 0 {
             Span::styled(format!("  (saved {} tokens via sub-agents)", format_tokens(turn.context_saved)), theme::subtle_style())
         } else {
@@ -366,9 +366,9 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
     ]));
     lines.push(Line::from(vec![
         Span::styled("  tokens  ", theme::dim_style()),
-        Span::styled(format!("↑{}", format_tokens(turn.input_tokens)), Style::default().fg(theme::PRIMARY)),
+        Span::styled(format!("↑{}", format_tokens(turn.input_tokens)), Style::default().fg(theme::primary())),
         Span::styled(" in  ", theme::dim_style()),
-        Span::styled(format!("↓{}", format_tokens(turn.output_tokens)), Style::default().fg(theme::WARM)),
+        Span::styled(format!("↓{}", format_tokens(turn.output_tokens)), Style::default().fg(theme::warm())),
         Span::styled(" out  ", theme::dim_style()),
         Span::styled(
             format!("cache read: {}  cache write: {}", format_tokens(turn.cache_read_tokens), format_tokens(turn.cache_write_tokens)),
@@ -403,10 +403,10 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             let pct = format!(" {:.0}%", value * 100.0);
 
             lines.push(Line::from(vec![
-                Span::styled(format!("  {} ", label), Style::default().fg(theme::SUBTLE)),
+                Span::styled(format!("  {} ", label), Style::default().fg(theme::subtle())),
                 Span::styled(bar_filled, Style::default().fg(bar_color)),
-                Span::styled(bar_empty, Style::default().fg(theme::DIM)),
-                Span::styled(pct, Style::default().fg(theme::SUBTLE)),
+                Span::styled(bar_empty, Style::default().fg(theme::dim())),
+                Span::styled(pct, Style::default().fg(theme::subtle())),
             ]));
         }
         lines.push(Line::from(""));
@@ -421,7 +421,7 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             for chunk in word_wrap(&metrics.recap, wrap_width) {
                 lines.push(Line::from(vec![
                     Span::styled("    ", Style::default()),
-                    Span::styled(chunk, Style::default().fg(theme::SUBTLE)),
+                    Span::styled(chunk, Style::default().fg(theme::subtle())),
                 ]));
             }
             lines.push(Line::from(""));
@@ -447,8 +447,8 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
         lines.push(Line::from(""));
     } else {
         lines.push(Line::from(vec![
-            Span::styled("  ◈ ", Style::default().fg(theme::DIM)),
-            Span::styled("metrics not available", Style::default().fg(theme::DIM)),
+            Span::styled("  ◈ ", Style::default().fg(theme::dim())),
+            Span::styled("metrics not available", Style::default().fg(theme::dim())),
         ]));
         lines.push(Line::from(""));
     }
@@ -458,14 +458,14 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
         lines.push(Line::from(Span::styled(format!("  {section_sep}"), theme::dim_style())));
         lines.push(Line::from(Span::styled(
             format!("  ◆ {} agents spawned", turn.agents.len()),
-            Style::default().fg(theme::WARM).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::warm()).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
 
         for agent in &turn.agents {
             lines.push(Line::from(vec![
-                Span::styled("  ◆ ", Style::default().fg(theme::WARM).add_modifier(Modifier::BOLD)),
-                Span::styled(&agent.name, Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+                Span::styled("  ◆ ", Style::default().fg(theme::warm()).add_modifier(Modifier::BOLD)),
+                Span::styled(&agent.name, Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)),
                 Span::styled(
                     format!("  {}  ↑{} ↓{}", format_cost(agent.cost), format_tokens(agent.input_tokens), format_tokens(agent.output_tokens)),
                     theme::subtle_style(),
@@ -478,10 +478,10 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             // Request — truncated unless expanded
             if !agent.prompt.is_empty() {
                 lines.push(Line::from(vec![
-                    Span::styled("    ▸ ", Style::default().fg(theme::ACCENT)),
-                    Span::styled("REQUEST", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+                    Span::styled("    ▸ ", Style::default().fg(theme::accent())),
+                    Span::styled("REQUEST", Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
                     if !show_full_agent && agent.prompt.len() > AGENT_PROMPT_PREVIEW_LEN {
-                        Span::styled("  (e to expand)", Style::default().fg(theme::DIM))
+                        Span::styled("  (e to expand)", Style::default().fg(theme::dim()))
                     } else { Span::raw("") },
                 ]));
                 let text = if show_full_agent {
@@ -502,10 +502,10 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             // Response — truncated unless expanded
             if !agent.response_preview.is_empty() {
                 lines.push(Line::from(vec![
-                    Span::styled("    ◂ ", Style::default().fg(theme::PRIMARY)),
-                    Span::styled("RESPONSE", Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD)),
+                    Span::styled("    ◂ ", Style::default().fg(theme::primary())),
+                    Span::styled("RESPONSE", Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)),
                     if !show_full_agent && agent.response_preview.len() > AGENT_RESPONSE_PREVIEW_LEN {
-                        Span::styled("  (e to expand)", Style::default().fg(theme::DIM))
+                        Span::styled("  (e to expand)", Style::default().fg(theme::dim()))
                     } else { Span::raw("") },
                 ]));
                 let text = if show_full_agent {
@@ -517,7 +517,7 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
                 for chunk in word_wrap(&text, wrap_width) {
                     lines.push(Line::from(vec![
                         Span::styled("      ", Style::default()),
-                        Span::styled(chunk, Style::default().fg(theme::SUBTLE)),
+                        Span::styled(chunk, Style::default().fg(theme::subtle())),
                     ]));
                 }
                 lines.push(Line::from(""));

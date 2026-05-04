@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             AgentStatus::WaitingForInput => {
-                Span::styled("  ", Style::default().fg(theme::WARM))
+                Span::styled("  ", Style::default().fg(theme::warm()))
             }
         };
 
@@ -121,7 +121,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     lines.push(Line::from(Span::styled(
                         separator_text,
                         Style::default()
-                            .fg(theme::SUBTLE)
+                            .fg(theme::subtle())
                             .add_modifier(Modifier::BOLD),
                     )));
                     lines.push(Line::from(""));
@@ -147,7 +147,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 let to_agent = agents.iter().find(|a| a.id == msg.to);
                 let to_name = to_agent.map(|a| a.name.as_str()).unwrap_or(&msg.to);
                 let to_color = if is_old_turn {
-                    theme::DIM
+                    theme::dim()
                 } else {
                     to_agent.map(|a| a.color).unwrap_or(Color::White)
                 };
@@ -159,7 +159,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 let from_agent = agents.iter().find(|a| a.id == msg.from);
                 let from_name = from_agent.map(|a| a.name.as_str()).unwrap_or(&msg.from);
                 let from_color = if is_old_turn {
-                    theme::DIM
+                    theme::dim()
                 } else {
                     from_agent.map(|a| a.color).unwrap_or(Color::White)
                 };
@@ -238,7 +238,7 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(
                 " sessions ",
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -281,14 +281,14 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
         // Cursor and highlight
         let (cursor, name_style, detail_style) = if is_selected {
             (
-                Span::styled("  > ", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled("  > ", Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                Style::default().fg(theme::SUBTLE),
+                Style::default().fg(theme::subtle()),
             )
         } else {
             (
                 Span::styled("    ", theme::dim_style()),
-                Style::default().fg(theme::SUBTLE),
+                Style::default().fg(theme::subtle()),
                 theme::dim_style(),
             )
         };
@@ -296,7 +296,7 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
         // Status indicator: green dot = recently active, dim circle = stale
         let recent = *last_modified > 0 && now.saturating_sub(*last_modified) < 300;
         let status_indicator = if recent {
-            Span::styled("● ", Style::default().fg(theme::ACCENT))
+            Span::styled("● ", Style::default().fg(theme::accent()))
         } else {
             Span::styled("○ ", theme::dim_style())
         };
@@ -361,7 +361,7 @@ fn render_placeholder(frame: &mut Frame, app: &App, area: Rect) {
         vec![
             Line::from(Span::styled(
                 "waiting for agent activity",
-                Style::default().fg(theme::SUBTLE),
+                Style::default().fg(theme::subtle()),
             )),
             Line::from(""),
             Line::from(Span::styled(

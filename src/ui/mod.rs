@@ -110,7 +110,14 @@ fn render_boot(frame: &mut Frame, app: &App) {
     for (i, line) in EYE_ART.iter().enumerate() {
         if i < lines_to_show {
             let color = if !theme::is_truecolor() {
-                Color::Red
+                // 256-color gradient: red shades (196→160→124→88)
+                let shade = match (i * 4 / EYE_ART.len().max(1)) {
+                    0 => Color::Indexed(196), // bright red
+                    1 => Color::Indexed(160), // medium red
+                    2 => Color::Indexed(124), // dark red
+                    _ => Color::Indexed(88),  // deep red
+                };
+                shade
             } else if i == glow_line && logo_progress < 1.0 {
                 Color::Rgb(255, 200, 150)
             } else {
@@ -143,7 +150,7 @@ fn render_boot(frame: &mut Frame, app: &App) {
     if text_progress > 0.0 {
         let name_widget = Paragraph::new(Line::from(Span::styled(
             "A  E  T  H  E  R",
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
         )))
         .alignment(Alignment::Center);
         frame.render_widget(name_widget, chunks[3]);
@@ -153,7 +160,7 @@ fn render_boot(frame: &mut Frame, app: &App) {
     if text_progress > 0.5 {
         let tagline = Paragraph::new(Line::from(Span::styled(
             TAGLINE,
-            Style::default().fg(theme::SUBTLE),
+            Style::default().fg(theme::subtle()),
         )))
         .alignment(Alignment::Center);
         frame.render_widget(tagline, chunks[4]);
@@ -169,7 +176,7 @@ fn render_boot(frame: &mut Frame, app: &App) {
         };
         let status = Paragraph::new(Line::from(Span::styled(
             status_text,
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::dim()),
         )))
         .alignment(Alignment::Center);
         frame.render_widget(status, chunks[6]);
@@ -201,7 +208,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
     // Pulsing eye: use 2 alternating states for basic terminals, smooth RGB for truecolor
     let pulse_style = if app.paused {
-        Style::default().fg(theme::DIM)
+        Style::default().fg(theme::dim())
     } else if truecolor {
         let phase = (app.tick % 30) as f64 / 30.0 * std::f64::consts::TAU;
         let bright = phase.sin() * 0.5 + 0.5;
@@ -242,7 +249,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         left_spans.push(Span::styled("aether", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
     }
 
-    left_spans.push(Span::styled(" │", Style::default().fg(theme::DIM)));
+    left_spans.push(Span::styled(" │", Style::default().fg(theme::dim())));
 
     // ── Center: contextual info ──
     if app.view == View::Sessions {
@@ -251,13 +258,13 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or(0);
         left_spans.push(Span::styled(
             format!(" {} sessions", session_count),
-            Style::default().fg(theme::SUBTLE),
+            Style::default().fg(theme::subtle()),
         ));
-        left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::DIM)));
+        left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::dim())));
         let status_style = if status == "watching" {
-            Style::default().fg(theme::ACCENT)
+            Style::default().fg(theme::accent())
         } else {
-            Style::default().fg(theme::WARM)
+            Style::default().fg(theme::warm())
         };
         left_spans.push(Span::styled("● ", pulse_style));
         left_spans.push(Span::styled(status, status_style));
@@ -269,15 +276,15 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         // Session position
         left_spans.push(Span::styled(
             format!(" {}/{}", live.active_idx + 1, session_count),
-            Style::default().fg(theme::SUBTLE),
+            Style::default().fg(theme::subtle()),
         ));
-        left_spans.push(Span::styled(" │", Style::default().fg(theme::DIM)));
+        left_spans.push(Span::styled(" │", Style::default().fg(theme::dim())));
 
         // Session name
         let name_display: String = session_name.chars().take(40).collect();
         left_spans.push(Span::styled(
             format!(" {}", name_display),
-            Style::default().fg(theme::PRIMARY).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD),
         ));
 
         // Session cost & tokens (right side)
@@ -287,11 +294,11 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             let total_out: u64 = s.usage.turns.iter().map(|t| t.output_tokens).sum();
             let turn_count = s.usage.turn_count();
 
-            left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::DIM)));
+            left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::dim())));
             left_spans.push(Span::styled("● ", pulse_style));
             left_spans.push(Span::styled(
                 format!("{}", format_cost(total_cost)),
-                Style::default().fg(theme::WARM),
+                Style::default().fg(theme::warm()),
             ));
             left_spans.push(Span::styled(
                 format!("  ↑{} ↓{}  {} turns",
@@ -299,17 +306,17 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                     format_tokens(total_out),
                     turn_count,
                 ),
-                Style::default().fg(theme::SUBTLE),
+                Style::default().fg(theme::subtle()),
             ));
         }
     } else {
-        left_spans.push(Span::styled(" demo", Style::default().fg(theme::PRIMARY)));
-        left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::DIM)));
-        left_spans.push(Span::styled(status, Style::default().fg(theme::ACCENT)));
+        left_spans.push(Span::styled(" demo", Style::default().fg(theme::primary())));
+        left_spans.push(Span::styled(" ─ ", Style::default().fg(theme::dim())));
+        left_spans.push(Span::styled(status, Style::default().fg(theme::accent())));
     }
 
     if app.paused {
-        left_spans.push(Span::styled("  ⏸ paused", Style::default().fg(theme::WARM)));
+        left_spans.push(Span::styled("  ⏸ paused", Style::default().fg(theme::warm())));
     }
 
     let title_line = Line::from(left_spans);
@@ -317,7 +324,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     // Render as a styled block with top border accent
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::DIM))
+        .border_style(Style::default().fg(theme::dim()))
         .title(title_line);
 
     frame.render_widget(block, area);
@@ -364,9 +371,9 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
     for (i, (key, desc)) in items.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(" │ ", Style::default().fg(theme::DIM)));
+            spans.push(Span::styled(" │ ", Style::default().fg(theme::dim())));
         }
-        spans.push(Span::styled(format!(" {}", key), Style::default().fg(theme::ACCENT)));
+        spans.push(Span::styled(format!(" {}", key), Style::default().fg(theme::accent())));
         spans.push(Span::styled(format!(" {}", desc), theme::subtle_style()));
     }
 
