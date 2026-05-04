@@ -198,38 +198,52 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
     let status = app.engine.status_text();
 
-    // Pulsing live dot: strong sinusoidal cycle (~1.5s period at 50ms tick)
+    // Detect truecolor support
+    let truecolor = std::env::var("COLORTERM")
+        .map(|v| v == "truecolor" || v == "24bit")
+        .unwrap_or(false);
+
+    // Pulsing eye: use 2 alternating states for basic terminals, smooth RGB for truecolor
     let pulse_style = if app.paused {
         Style::default().fg(theme::DIM)
-    } else {
+    } else if truecolor {
         let phase = (app.tick % 30) as f64 / 30.0 * std::f64::consts::TAU;
-        let bright = phase.sin() * 0.5 + 0.5; // 0.0 → 1.0
-        let r = (40.0 + bright * 215.0) as u8;   // 40 → 255
-        let g = (10.0 + bright * 50.0) as u8;    // 10 → 60
-        let b = (10.0 + bright * 40.0) as u8;    // 10 → 50
+        let bright = phase.sin() * 0.5 + 0.5;
+        let r = (40.0 + bright * 215.0) as u8;
+        let g = (10.0 + bright * 50.0) as u8;
+        let b = (10.0 + bright * 40.0) as u8;
         Style::default().fg(Color::Rgb(r, g, b))
+    } else {
+        // Basic terminal: alternate between red and dark red
+        if app.tick % 30 < 15 {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
     };
 
-    // ── Left: braille eye + sweeping "aether" ──
+    // ── Left: braille eye + "aether" ──
     let mut left_spans: Vec<Span> = vec![
         Span::styled(" ⠑⠽⠑", pulse_style),
         Span::raw(" "),
     ];
 
-    // "aether" with a smooth left-to-right color sweep using sine easing
-    let word = "aether";
-    let t = app.tick as f64 * 0.02; // continuous time, ~50ms per tick
-    let sweep_pos = t.sin() * 0.5 + 0.5; // smooth 0→1→0 oscillation, ~3.1s cycle
-    for (i, ch) in word.chars().enumerate() {
-        let char_pos = i as f64 / (word.len() - 1) as f64;
-        let dist = (char_pos - sweep_pos).abs();
-        // Smooth gaussian-like falloff
-        let glow = (-dist * dist * 12.0).exp();
-        let r = (130.0 + glow * 125.0) as u8;
-        let g = (40.0 + glow * 50.0) as u8;
-        let b = (35.0 + glow * 35.0) as u8;
-        let style = Style::default().fg(Color::Rgb(r, g, b)).add_modifier(Modifier::BOLD);
-        left_spans.push(Span::styled(ch.to_string(), style));
+    if truecolor {
+        // Smooth sweep for truecolor terminals
+        let t = app.tick as f64 * 0.02;
+        let sweep_pos = t.sin() * 0.5 + 0.5;
+        for (i, ch) in "aether".chars().enumerate() {
+            let char_pos = i as f64 / 5.0;
+            let dist = (char_pos - sweep_pos).abs();
+            let glow = (-dist * dist * 12.0).exp();
+            let r = (130.0 + glow * 125.0) as u8;
+            let g = (40.0 + glow * 50.0) as u8;
+            let b = (35.0 + glow * 35.0) as u8;
+            left_spans.push(Span::styled(ch.to_string(), Style::default().fg(Color::Rgb(r, g, b)).add_modifier(Modifier::BOLD)));
+        }
+    } else {
+        // Static styled name for basic terminals
+        left_spans.push(Span::styled("aether", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
     }
 
     left_spans.push(Span::styled(" │", Style::default().fg(theme::DIM)));
@@ -312,17 +326,19 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(block, area);
 
-    // Draw accent line on top border
-    let top_y = area.y;
-    let width = area.width.min(8);
-    for x in area.x..area.x + width {
-        let frac = (x - area.x) as f64 / width as f64;
-        let r = (255.0 - frac * 95.0) as u8;  // 255 → 160
-        let g = (90.0 - frac * 60.0) as u8;   // 90 → 30
-        let b = (70.0 - frac * 50.0) as u8;   // 70 → 20
-        let cell = frame.buffer_mut().cell_mut((x, top_y));
-        if let Some(cell) = cell {
-            cell.set_style(Style::default().fg(Color::Rgb(r, g, b)));
+    // Draw accent line on top border (truecolor only)
+    if truecolor {
+        let top_y = area.y;
+        let width = area.width.min(8);
+        for x in area.x..area.x + width {
+            let frac = (x - area.x) as f64 / width as f64;
+            let r = (255.0 - frac * 95.0) as u8;
+            let g = (90.0 - frac * 60.0) as u8;
+            let b = (70.0 - frac * 50.0) as u8;
+            let cell = frame.buffer_mut().cell_mut((x, top_y));
+            if let Some(cell) = cell {
+                cell.set_style(Style::default().fg(Color::Rgb(r, g, b)));
+            }
         }
     }
 }

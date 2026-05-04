@@ -43,6 +43,14 @@ aether watch
 
 That's it. You'll see all your Claude Code sessions updating live.
 
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/uninstall.sh | bash
+```
+
+Removes the binary, skill, hooks, recaps cache, and cleans up settings.json.
+
 ## Install from source
 
 ```bash
