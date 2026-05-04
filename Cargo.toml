@@ -2,6 +2,9 @@
 name = "aether"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Live agent observability for Claude Code"
+repository = "https://github.com/connectchiragg/aether"
 
 [dependencies]
 ratatui = "0.29"
