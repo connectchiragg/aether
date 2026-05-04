@@ -110,14 +110,26 @@ fn render_boot(frame: &mut Frame, app: &App) {
     for (i, line) in EYE_ART.iter().enumerate() {
         if i < lines_to_show {
             let color = if !theme::is_truecolor() {
-                // 256-color gradient: red shades (196→160→124→88)
-                let shade = match (i * 4 / EYE_ART.len().max(1)) {
-                    0 => Color::Indexed(196), // bright red
-                    1 => Color::Indexed(160), // medium red
-                    2 => Color::Indexed(124), // dark red
-                    _ => Color::Indexed(88),  // deep red
-                };
-                shade
+                // 256-color gradient with scan-line glow
+                let t_pos = i as f32 / total;
+                let dist = (t_pos - scan_pos).abs();
+                let is_glow = dist < 0.15 && logo_progress >= 1.0;
+
+                if is_glow && dist < 0.05 {
+                    // Scan-line center: bright yellow/white
+                    Color::Indexed(220) // gold
+                } else if is_glow {
+                    // Scan-line edge: bright red
+                    Color::Indexed(203) // salmon
+                } else {
+                    // Base gradient: red shades top to bottom
+                    match (i * 4 / EYE_ART.len().max(1)) {
+                        0 => Color::Indexed(196), // bright red
+                        1 => Color::Indexed(160), // medium red
+                        2 => Color::Indexed(124), // dark red
+                        _ => Color::Indexed(88),  // deep red
+                    }
+                }
             } else if i == glow_line && logo_progress < 1.0 {
                 Color::Rgb(255, 200, 150)
             } else {
