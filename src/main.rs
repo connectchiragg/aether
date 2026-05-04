@@ -36,8 +36,6 @@ enum Commands {
         #[arg(short, long)]
         dir: Option<PathBuf>,
     },
-    /// Run a scripted demo scenario
-    Demo,
     /// Set up Claude Code skill and hooks
     Setup,
 }
@@ -59,8 +57,10 @@ async fn main() -> io::Result<()> {
             let threads_dir = dir.unwrap_or_else(default_threads_dir);
             App::new_live(threads_dir)
         }
-        Some(Commands::Demo) => App::new_mock(),
-        None => App::new_live(default_threads_dir()),
+        None => {
+            eprintln!("Usage: aether <command>\n\n  aether watch   Watch live sessions\n  aether setup   Set up Claude Code skill and hooks\n");
+            return Ok(());
+        }
     };
 
     // Setup terminal

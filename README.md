@@ -13,6 +13,7 @@ A terminal UI that watches Claude Code sessions in real-time, showing token usag
 ```bash
 brew tap connectchiragg/tap
 brew install aether
+aether setup
 ```
 
 **Or via script:**
@@ -21,27 +22,15 @@ brew install aether
 curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/install.sh | bash
 ```
 
-Both install the `aether` binary and set up the `/aether` Claude Code skill.
-
-### 2. Enable metrics (optional)
-
-Inside any Claude Code session, type:
-
-```
-/aether
-```
-
-This enables per-turn quality scoring (friction, hallucination, confidence, acceptance, performance) powered by Haiku. Metrics are scored live as you work. Type `/aether` again to disable.
-
-### 3. Watch
-
-Open a second terminal:
+### 2. Watch
 
 ```bash
 aether watch
 ```
 
-That's it. You'll see all your Claude Code sessions updating live.
+### 3. Enable metrics (optional)
+
+Inside any Claude Code session, type `/aether` to enable per-turn quality scoring (friction, hallucination, confidence, acceptance, performance) powered by Haiku. Type `/aether` again to disable.
 
 ## Uninstall
 
