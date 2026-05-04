@@ -6,20 +6,31 @@ A terminal UI that watches Claude Code sessions in real-time, showing token usag
 
 ## Install
 
+### One-liner (recommended)
+
 ```bash
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/install.sh | bash
 ```
 
-Or build manually:
+This installs the binary to `/usr/local/bin` and sets up the Claude Code `/aether` skill automatically.
+
+### From source
 
 ```bash
-cargo build --release
-# Binary at target/release/aether
+cargo install --git https://github.com/connectchiragg/aether
+```
+
+Then set up the skill manually:
+
+```bash
+mkdir -p ~/.claude/skills/aether
+curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/skills/aether/SKILL.md \
+  -o ~/.claude/skills/aether/SKILL.md
 ```
 
 ### Requirements
 
-- Rust 1.70+
+- macOS (arm64/x86) or Linux (x86/arm64)
 - A terminal with Unicode/braille support
 
 ## Usage
@@ -77,14 +88,7 @@ Mouse scroll works in the detail panel.
 
 ## Claude Code Skill
 
-To add the `/aether` toggle skill to Claude Code, copy the skill file:
-
-```bash
-mkdir -p ~/.claude/skills/aether
-cp .claude/skills/aether/SKILL.md ~/.claude/skills/aether/SKILL.md
-```
-
-Then use `/aether` in Claude Code to toggle agent call logging on/off.
+The install script sets up the `/aether` skill automatically. Use it in Claude Code to toggle agent call logging on/off.
 
 ## How it works
 
