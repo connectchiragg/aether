@@ -2,7 +2,15 @@
 set -euo pipefail
 
 REPO="connectchiragg/aether"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+# Use /opt/homebrew/bin on Apple Silicon, /usr/local/bin otherwise
+if [ -d "/opt/homebrew/bin" ]; then
+  DEFAULT_DIR="/opt/homebrew/bin"
+elif [ -d "/usr/local/bin" ]; then
+  DEFAULT_DIR="/usr/local/bin"
+else
+  DEFAULT_DIR="$HOME/.local/bin"
+fi
+INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_DIR}"
 SKILL_DIR="$HOME/.claude/skills/aether"
 
 # Colors
@@ -58,6 +66,7 @@ curl -fsSL "$DOWNLOAD_URL" -o "${TMPDIR}/${ASSET_NAME}" || err "Failed to downlo
 
 info "Installing to ${INSTALL_DIR}/aether..."
 tar -xzf "${TMPDIR}/${ASSET_NAME}" -C "$TMPDIR"
+mkdir -p "$INSTALL_DIR" 2>/dev/null || sudo mkdir -p "$INSTALL_DIR"
 
 if [ -w "$INSTALL_DIR" ]; then
   mv "${TMPDIR}/aether" "${INSTALL_DIR}/aether"
