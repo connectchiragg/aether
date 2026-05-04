@@ -290,9 +290,12 @@ impl SessionState {
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_str())
                 {
-                    // Skip system/meta messages (XML-tagged content like <local-command-caveat>)
+                    // Skip system/meta messages and tool call descriptions
                     let trimmed = content.trim_start();
-                    if trimmed.starts_with('<') {
+                    if trimmed.starts_with('<')
+                        || trimmed.starts_with("Tool: ")
+                        || trimmed.starts_with("Working Directory:")
+                    {
                         return;
                     }
 
@@ -705,9 +708,20 @@ impl LiveEngine {
             if let Ok(projects) = fs::read_dir(&projects_dir) {
                 for project in projects.flatten() {
                     let project_path = project.path();
-                    if project_path.is_dir() {
-                        self.scan_directory(&project_path);
+                    if !project_path.is_dir() {
+                        continue;
                     }
+                    // Skip ephemeral/temp project directories and worktrees
+                    let dir_name = project_path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    if dir_name.starts_with("-private-tmp")
+                        || dir_name.starts_with("-tmp")
+                        || dir_name.contains("worktrees-")
+                    {
+                        continue;
+                    }
+                    self.scan_directory(&project_path);
                 }
             }
         }
