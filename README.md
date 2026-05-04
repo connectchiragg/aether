@@ -89,7 +89,7 @@ Register the Stop hook in `~/.claude/settings.json`:
 
 - macOS (arm64/x86) or Linux (x86/arm64)
 - Claude Code CLI installed
-- A **truecolor terminal** (iTerm2, Ghostty, Kitty, Warp, Alacritty). macOS Terminal.app has limited color support and will render incorrectly.
+- A terminal with Unicode support
 
 ## What you see
 

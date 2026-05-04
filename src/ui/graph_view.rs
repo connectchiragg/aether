@@ -11,14 +11,25 @@ use crate::model::{format_cost, format_tokens, TurnUsage};
 use crate::theme;
 
 const METRIC_NAMES: &[&str] = &["cost", "friction", "hallucination", "confidence", "acceptance", "performance"];
-const METRIC_COLORS: &[Color] = &[
-    Color::Rgb(220, 60, 60),    // cost - crimson
-    Color::Rgb(220, 60, 60),    // friction - crimson
-    Color::Rgb(200, 40, 40),    // hallucination - dark crimson
-    Color::Rgb(255, 170, 80),   // confidence - warm
-    Color::Rgb(220, 60, 60),    // acceptance - crimson
-    Color::Rgb(220, 60, 60),    // performance - crimson
-];
+
+fn metric_color(idx: usize) -> Color {
+    if theme::is_truecolor() {
+        match idx {
+            0 => Color::Rgb(220, 60, 60),
+            1 => Color::Rgb(220, 60, 60),
+            2 => Color::Rgb(200, 40, 40),
+            3 => Color::Rgb(255, 170, 80),
+            4 => Color::Rgb(220, 60, 60),
+            5 => Color::Rgb(220, 60, 60),
+            _ => Color::Red,
+        }
+    } else {
+        match idx {
+            3 => Color::Yellow,
+            _ => Color::Red,
+        }
+    }
+}
 
 const PROMPT_PREVIEW_LEN: usize = 300;
 const AGENT_PROMPT_PREVIEW_LEN: usize = 200;
@@ -84,10 +95,14 @@ fn metric_value(turn: &TurnUsage, metric: u8) -> f64 {
 
 /// Crimson gradient: interpolate from ember to deep crimson based on fraction (0.0-1.0)
 fn crimson_gradient(frac: f64) -> Color {
-    let r = (255.0 - frac * 55.0) as u8;   // 255 → 200
-    let g = (90.0 - frac * 60.0) as u8;    // 90 → 30
-    let b = (70.0 - frac * 50.0) as u8;    // 70 → 20
-    Color::Rgb(r, g, b)
+    if theme::is_truecolor() {
+        let r = (255.0 - frac * 55.0) as u8;
+        let g = (90.0 - frac * 60.0) as u8;
+        let b = (70.0 - frac * 50.0) as u8;
+        Color::Rgb(r, g, b)
+    } else {
+        Color::Red
+    }
 }
 
 fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_metric: u8, zoom: i8, area: Rect) {
@@ -398,9 +413,10 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
 
         // Reasoning
         if !metrics.recap.is_empty() {
+            let purple = if theme::is_truecolor() { Color::Rgb(180, 130, 255) } else { Color::Magenta };
             lines.push(Line::from(vec![
-                Span::styled("  ◈ ", Style::default().fg(Color::Rgb(180, 130, 255))),
-                Span::styled("REASONING", Style::default().fg(Color::Rgb(180, 130, 255)).add_modifier(Modifier::BOLD)),
+                Span::styled("  ◈ ", Style::default().fg(purple)),
+                Span::styled("REASONING", Style::default().fg(purple).add_modifier(Modifier::BOLD)),
             ]));
             for chunk in word_wrap(&metrics.recap, wrap_width) {
                 lines.push(Line::from(vec![
@@ -415,14 +431,18 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
         // Show "analyzing" only if this session has metrics (hook is active)
         let dot_count = ((app.tick / 8) % 4) as usize;
         let dots = ".".repeat(dot_count + 1);
-        let phase = (app.tick % 20) as f64 / 20.0 * std::f64::consts::TAU;
-        let bright = phase.sin() * 0.5 + 0.5;
-        let r = (120.0 + bright * 100.0) as u8;
-        let g = (40.0 + bright * 30.0) as u8;
-        let b = (40.0 + bright * 20.0) as u8;
+        let flicker_color = if theme::is_truecolor() {
+            let phase = (app.tick % 20) as f64 / 20.0 * std::f64::consts::TAU;
+            let bright = phase.sin() * 0.5 + 0.5;
+            Color::Rgb(
+                (120.0 + bright * 100.0) as u8,
+                (40.0 + bright * 30.0) as u8,
+                (40.0 + bright * 20.0) as u8,
+            )
+        } else if app.tick % 20 < 10 { Color::Red } else { Color::DarkGray };
         lines.push(Line::from(vec![
-            Span::styled("  ◈ ", Style::default().fg(Color::Rgb(r, g, b))),
-            Span::styled(format!("analyzing{}", dots), Style::default().fg(Color::Rgb(r, g, b))),
+            Span::styled("  ◈ ", Style::default().fg(flicker_color)),
+            Span::styled(format!("analyzing{}", dots), Style::default().fg(flicker_color)),
         ]));
         lines.push(Line::from(""));
     } else {

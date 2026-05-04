@@ -109,22 +109,18 @@ fn render_boot(frame: &mut Frame, app: &App) {
     let mut art_lines: Vec<Line> = Vec::new();
     for (i, line) in EYE_ART.iter().enumerate() {
         if i < lines_to_show {
-            let color = if i == glow_line && logo_progress < 1.0 {
+            let color = if !theme::is_truecolor() {
+                Color::Red
+            } else if i == glow_line && logo_progress < 1.0 {
                 Color::Rgb(255, 200, 150)
             } else {
-                // Lava gradient: orange top → red middle → dark crimson bottom
                 let t_pos = i as f32 / total;
                 let base_r = 240.0 - 80.0 * t_pos;
                 let base_g = 100.0 - 70.0 * t_pos;
                 let base_b = 40.0 - 20.0 * t_pos;
 
-                // Scan line: soft bright band
                 let dist = (t_pos - scan_pos).abs();
-                let glow = if dist < 0.15 {
-                    1.0 - (dist / 0.15)
-                } else {
-                    0.0
-                };
+                let glow = if dist < 0.15 { 1.0 - (dist / 0.15) } else { 0.0 };
 
                 let r = (base_r + (255.0 - base_r) * glow).min(255.0) as u8;
                 let g = (base_g + (180.0 - base_g) * glow).min(255.0) as u8;
