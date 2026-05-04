@@ -162,9 +162,30 @@ async fn run_app(
                         };
                     }
                 } else if !app.paused {
+                    // Track turn count before tick for auto-follow
+                    let prev_turn_count = if app.view == View::Graph {
+                        app.engine.live_engine()
+                            .and_then(|e| e.sessions.get(e.active_idx))
+                            .map(|s| s.usage.turn_count())
+                            .unwrap_or(0)
+                    } else { 0 };
+                    let was_on_last = app.view == View::Graph
+                        && app.selected_dot >= prev_turn_count.saturating_sub(1);
+
                     let should_lock = app.engine.tick(app.session_locked);
                     if should_lock {
                         app.session_locked = true;
+                    }
+
+                    // Auto-follow: if user was on last dot, stay on last dot
+                    if was_on_last {
+                        let new_count = app.engine.live_engine()
+                            .and_then(|e| e.sessions.get(e.active_idx))
+                            .map(|s| s.usage.turn_count())
+                            .unwrap_or(0);
+                        if new_count > prev_turn_count {
+                            app.selected_dot = new_count.saturating_sub(1);
+                        }
                     }
                 }
             }
@@ -248,7 +269,12 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 }
                 app.session_locked = true;
                 app.view = View::Graph;
-                app.selected_dot = 0;
+                // Start at last turn
+                let turn_count = app.engine.live_engine()
+                    .and_then(|e| e.sessions.get(e.active_idx))
+                    .map(|s| s.usage.turn_count())
+                    .unwrap_or(0);
+                app.selected_dot = turn_count.saturating_sub(1);
                 app.focused_pane = 0;
                 app.pane_scrolls.clear();
             }
@@ -323,12 +349,36 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.graph_jump_input = Some(String::new());
             }
             KeyCode::Down => {
-                let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
-                app.pane_scrolls.insert(usize::MAX, cur.saturating_add(1));
+                // Switch to next session
+                if let Some(live) = app.engine.live_engine_mut() {
+                    let len = live.sessions.len();
+                    if len > 0 {
+                        live.active_idx = (live.active_idx + 1) % len;
+                        app.session_list_cursor = live.active_idx;
+                    }
+                }
+                let turn_count = app.engine.live_engine()
+                    .and_then(|e| e.sessions.get(e.active_idx))
+                    .map(|s| s.usage.turn_count())
+                    .unwrap_or(0);
+                app.selected_dot = turn_count.saturating_sub(1);
+                app.pane_scrolls.clear();
             }
             KeyCode::Up => {
-                let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
-                app.pane_scrolls.insert(usize::MAX, cur.saturating_sub(1));
+                // Switch to previous session
+                if let Some(live) = app.engine.live_engine_mut() {
+                    let len = live.sessions.len();
+                    if len > 0 {
+                        live.active_idx = (live.active_idx + len - 1) % len;
+                        app.session_list_cursor = live.active_idx;
+                    }
+                }
+                let turn_count = app.engine.live_engine()
+                    .and_then(|e| e.sessions.get(e.active_idx))
+                    .map(|s| s.usage.turn_count())
+                    .unwrap_or(0);
+                app.selected_dot = turn_count.saturating_sub(1);
+                app.pane_scrolls.clear();
             }
             KeyCode::Esc => {
                 app.session_locked = false;

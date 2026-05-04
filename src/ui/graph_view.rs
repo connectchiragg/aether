@@ -117,9 +117,11 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, area: R
     let visible_turns = &turns[start_idx..end_idx];
     let num_visible = visible_turns.len();
 
-    // Calculate dot positions
+    // Inset dots so labels at edges stay centered (half of max label width)
+    let max_label_len = format!("{}", end_idx).len();
+    let inset = max_label_len / 2 + 1;
     let spacing = if num_visible > 1 {
-        (graph_width.saturating_sub(2)) as f64 / (num_visible - 1) as f64
+        (graph_width.saturating_sub(inset * 2)) as f64 / (num_visible - 1) as f64
     } else {
         0.0
     };
@@ -132,7 +134,7 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, area: R
 
     for (i, turn) in visible_turns.iter().enumerate() {
         let x = if num_visible > 1 {
-            (1.0 + i as f64 * spacing) as usize
+            (inset as f64 + i as f64 * spacing) as usize
         } else {
             graph_width / 2
         };
@@ -201,30 +203,56 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, area: R
     }
 
     // X-axis labels (turn numbers) on last row
+    // First pass: always place the selected label. Second pass: fill others if space allows.
     let label_row = inner.height as usize - 1;
+    let mut occupied: Vec<bool> = vec![false; graph_width + 4];
+
+    // Helper: try to place a label, returns true if placed
+    let place_label = |grid: &mut Vec<Vec<(char, Style)>>, occupied: &mut Vec<bool>, x: usize, label: &str, style: Style| -> bool {
+        let centered = x.saturating_sub(label.len() / 2);
+        let label_x = if centered + label.len() > graph_width {
+            graph_width.saturating_sub(label.len())
+        } else {
+            centered
+        };
+        // Check if any position is occupied (with 1 char gap)
+        let start = label_x.saturating_sub(1);
+        let end = (label_x + label.len() + 1).min(occupied.len());
+        if occupied[start..end].iter().any(|&o| o) {
+            return false;
+        }
+        for (j, ch) in label.chars().enumerate() {
+            if label_x + j < graph_width {
+                grid[label_row][label_x + j] = (ch, style);
+            }
+        }
+        for p in label_x..label_x + label.len() {
+            if p < occupied.len() { occupied[p] = true; }
+        }
+        true
+    };
+
+    // Place selected label first
+    if let Some(&(x, _)) = dot_positions.get(selected.saturating_sub(start_idx)) {
+        let label = format!("{}", selected + 1);
+        place_label(&mut grid, &mut occupied, x, &label, Style::default().fg(theme::ACCENT));
+    }
+
+    // Place other labels
     for (i, &(x, _)) in dot_positions.iter().enumerate() {
         let actual_idx = start_idx + i;
+        if actual_idx == selected { continue; }
         let label = format!("{}", actual_idx + 1);
-        // Only show every Nth label to avoid overlap
-        let show_label = num_visible <= 20 || i % (num_visible / 10).max(1) == 0 || actual_idx == selected;
-        if show_label && x + label.len() <= graph_width {
-            for (j, ch) in label.chars().enumerate() {
-                if x + j < graph_width {
-                    let style = if actual_idx == selected {
-                        Style::default().fg(theme::ACCENT)
-                    } else {
-                        theme::dim_style()
-                    };
-                    grid[label_row][x + j] = (ch, style);
-                }
-            }
+        let show = num_visible <= 20 || i % (num_visible / 10).max(1) == 0;
+        if show {
+            place_label(&mut grid, &mut occupied, x, &label, theme::dim_style());
         }
     }
 
-    // Selection indicator (▲) below the selected dot
+    // Selection indicator (▼) above the selected dot
     if let Some(&(x, y)) = dot_positions.get(selected.saturating_sub(start_idx)) {
-        if y + 1 < inner.height as usize - 1 && x < graph_width {
-            grid[y + 1][x] = ('▲', Style::default().fg(theme::ACCENT));
+        if y > 0 && x < graph_width {
+            grid[y - 1][x] = ('▼', Style::default().fg(theme::ACCENT));
         }
     }
 

@@ -32,8 +32,8 @@ pub struct SessionState {
     current_turn_prompt: String,
     /// Running total of input context
     cumulative_context: u64,
-    /// Whether sub-agent files have been scanned
-    subagents_scanned: bool,
+    /// Set of already-scanned sub-agent meta file paths
+    scanned_subagent_files: std::collections::HashSet<PathBuf>,
     /// Maps agent IDs to canonical agent IDs (for grouping same-type agents)
     id_aliases: HashMap<String, String>,
 }
@@ -72,7 +72,7 @@ impl SessionState {
             native_name_resolved: false,
             current_turn_prompt: String::new(),
             cumulative_context: 0,
-            subagents_scanned: false,
+            scanned_subagent_files: std::collections::HashSet::new(),
             id_aliases: HashMap::new(),
         }
     }
@@ -148,8 +148,8 @@ impl SessionState {
 
         self.file_pos = reader.stream_position().unwrap_or(self.file_pos);
 
-        // Scan sub-agents once we have turn data
-        if !self.subagents_scanned && !self.usage.turns.is_empty() {
+        // Re-scan sub-agents when new ones appear
+        if !self.usage.turns.is_empty() {
             self.scan_subagents();
         }
     }
@@ -243,7 +243,7 @@ impl SessionState {
             && !line.contains("\"assistant\"")
             && !line.contains("\"user\"")
             && !line.contains("custom-title")
-            && !line.contains("agent-name")
+            && !line.contains("ai-title")
         {
             return;
         }
@@ -257,6 +257,7 @@ impl SessionState {
 
         match line_type {
             "custom-title" => {
+                // Explicit title (user /rename) — highest priority after user rename
                 if !dominated_name {
                     if let Some(title) = v.get("customTitle").and_then(|t| t.as_str()) {
                         self.name = title.to_string();
@@ -264,20 +265,36 @@ impl SessionState {
                     }
                 }
             }
-            "agent-name" => {
+            "ai-title" => {
+                // Auto-generated title by Claude Code (Haiku)
                 if !dominated_name {
-                    if let Some(name) = v.get("agentName").and_then(|t| t.as_str()) {
-                        self.name = name.to_string();
+                    if let Some(title) = v.get("aiTitle").and_then(|t| t.as_str()) {
+                        self.name = title.to_string();
                         self.native_name_resolved = true;
                     }
                 }
             }
+            "agent-name" => {
+                // Ignored for naming — only custom-title and ai-title are used
+            }
             "user" => {
-                // Extract prompt for name (fallback) and as turn boundary
+                // Only process real user prompts, not tool results or system messages.
+                // Real prompts have "userType": "external" and string content.
+                let user_type = v.get("userType").and_then(|u| u.as_str()).unwrap_or("");
+                if user_type != "external" {
+                    return;
+                }
+
                 if let Some(content) = v.get("message")
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_str())
                 {
+                    // Skip system/meta messages (XML-tagged content like <local-command-caveat>)
+                    let trimmed = content.trim_start();
+                    if trimmed.starts_with('<') {
+                        return;
+                    }
+
                     if !dominated_name_native {
                         let preview: String = content.chars()
                             .filter(|c| !c.is_control())
@@ -285,6 +302,9 @@ impl SessionState {
                             .collect();
                         if !preview.is_empty() {
                             self.name = preview;
+                            // Lock fallback name so later prompts don't overwrite it.
+                            // custom-title will still override if it appears later.
+                            self.native_name_resolved = true;
                         }
                     }
                     // Start a new turn
@@ -346,11 +366,8 @@ impl SessionState {
     }
 
     /// Scan sub-agent files in <session-id>/subagents/ and correlate to turns.
+    /// Incremental: only processes newly appeared agent files.
     fn scan_subagents(&mut self) {
-        if self.subagents_scanned || self.usage.turns.is_empty() {
-            return;
-        }
-
         // Sub-agent dir is next to the session file: <session-id>/subagents/
         let session_stem = self.file_path.file_stem()
             .and_then(|s| s.to_str())
@@ -361,21 +378,16 @@ impl SessionState {
             .unwrap_or_default();
 
         if !subagents_dir.exists() {
-            self.subagents_scanned = true;
             return;
         }
 
         let entries = match fs::read_dir(&subagents_dir) {
             Ok(e) => e,
-            Err(_) => {
-                self.subagents_scanned = true;
-                return;
-            }
+            Err(_) => return,
         };
 
-        // Collect turn timestamps for correlation
-        // We need to find which turn each sub-agent belongs to
-        // Parse each meta.json + jsonl pair
+        // Collect meta.json paths, skip already-scanned ones
+        let mut new_paths: Vec<PathBuf> = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -384,7 +396,16 @@ impl SessionState {
             if !path.to_string_lossy().ends_with(".meta.json") {
                 continue;
             }
+            if !self.scanned_subagent_files.contains(&path) {
+                new_paths.push(path);
+            }
+        }
 
+        if new_paths.is_empty() {
+            return;
+        }
+
+        for path in new_paths {
             // Read meta
             let meta: serde_json::Value = match fs::read_to_string(&path) {
                 Ok(data) => match serde_json::from_str(&data) {
@@ -403,7 +424,7 @@ impl SessionState {
                 .unwrap_or("")
                 .to_string();
 
-            // Read corresponding jsonl
+            // Read corresponding jsonl — skip if not ready yet (retry next tick)
             let jsonl_path = path.to_string_lossy().replace(".meta.json", ".jsonl");
             let jsonl_path = PathBuf::from(jsonl_path);
             if !jsonl_path.exists() {
@@ -471,6 +492,14 @@ impl SessionState {
                 }
             }
 
+            // Don't mark as scanned until we have an assistant response
+            if response_parts.is_empty() && output_tokens == 0 {
+                continue;
+            }
+
+            // Mark as scanned now that we have data
+            self.scanned_subagent_files.insert(path.clone());
+
             let cost = compute_cost(&model, input_tokens, output_tokens, cache_write, cache_read);
             let agent_cost = AgentCost {
                 name: if description.is_empty() { agent_type } else {
@@ -503,7 +532,6 @@ impl SessionState {
             }
         }
 
-        self.subagents_scanned = true;
     }
 
     fn ensure_agent(&mut self, id: &str, default_role: &str) {
@@ -521,6 +549,9 @@ impl SessionState {
         self.agents.push(agent);
     }
 }
+
+/// Maximum number of sessions to track (most recent by mtime).
+const MAX_SESSIONS: usize = 50;
 
 /// Manages multiple sessions, scanning Claude Code project directories.
 pub struct LiveEngine {
@@ -644,8 +675,19 @@ impl LiveEngine {
         // Sort by last_modified descending so most recent sessions appear first
         self.sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 
-        // Keep active_idx in bounds
-        if self.active_idx >= self.sessions.len() {
+        // Cap to latest N sessions
+        let active_path = self.sessions.get(self.active_idx)
+            .map(|s| s.file_path.clone());
+        self.sessions.truncate(MAX_SESSIONS);
+
+        // Keep active_idx pointing to the same session if possible
+        if let Some(path) = active_path {
+            if let Some(pos) = self.sessions.iter().position(|s| s.file_path == path) {
+                self.active_idx = pos;
+            } else {
+                self.active_idx = 0;
+            }
+        } else if self.active_idx >= self.sessions.len() {
             self.active_idx = self.sessions.len().saturating_sub(1);
         }
     }
@@ -661,8 +703,13 @@ impl LiveEngine {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            // Skip helper scripts and subagent directories
+            // Skip helper scripts
             if path.file_name().and_then(|n| n.to_str()) == Some("tui-log.py") {
+                continue;
+            }
+            // Skip files inside subagent directories
+            if path.parent().and_then(|p| p.file_name())
+                .and_then(|n| n.to_str()) == Some("subagents") {
                 continue;
             }
 
