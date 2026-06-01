@@ -6,23 +6,28 @@ mod event;
 mod live;
 mod mock;
 mod model;
+mod provider;
 mod theme;
 mod ui;
 
 use app::{App, View};
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{KeyCode, KeyEvent, KeyModifiers, EnableMouseCapture, DisableMouseCapture},
+    event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use event::{AppEvent, EventHandler};
+use provider::{AetherConfig, ProviderKind};
 use ratatui::prelude::*;
 use std::io;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "aether", about = "See the invisible — live agent observability")]
+#[command(
+    name = "aether",
+    about = "See the invisible — live agent observability"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -30,19 +35,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Watch live agent activity from session JSONL files
+    /// Watch enabled provider sessions
     Watch {
-        /// Path to the threads directory
+        /// Provider to open directly
+        provider: Option<ProviderKind>,
+        /// Override the provider session directory
         #[arg(short, long)]
         dir: Option<PathBuf>,
     },
-    /// Set up Claude Code skill and hooks
-    Setup,
-}
-
-fn default_threads_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".claude").join("threads")
+    /// Enable observability for a provider
+    Setup { provider: Option<ProviderKind> },
 }
 
 #[tokio::main]
@@ -50,15 +52,12 @@ async fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
     let mut app = match cli.command {
-        Some(Commands::Setup) => {
-            return run_setup();
+        Some(Commands::Setup { provider }) => {
+            return run_setup(provider);
         }
-        Some(Commands::Watch { dir }) => {
-            let threads_dir = dir.unwrap_or_else(default_threads_dir);
-            App::new_live(threads_dir)
-        }
+        Some(Commands::Watch { provider, dir }) => App::new_live(provider, dir),
         None => {
-            eprintln!("Usage: aether <command>\n\n  aether watch   Watch live sessions\n  aether setup   Set up Claude Code skill and hooks\n");
+            eprintln!("Usage: aether <command>\n\n  aether setup <provider>   Enable a provider\n  aether watch              Choose a provider and watch sessions\n");
             return Ok(());
         }
     };
@@ -80,7 +79,11 @@ async fn main() -> io::Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
 
     if let Err(e) = result {
@@ -90,10 +93,16 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn run_setup() -> io::Result<()> {
+fn run_setup(provider: Option<ProviderKind>) -> io::Result<()> {
     use std::process::Command;
     use std::thread;
     use std::time::Duration;
+
+    match provider {
+        None => return print_setup_status(),
+        Some(ProviderKind::Codex) => return run_setup_codex(),
+        Some(ProviderKind::Claude) => {}
+    }
 
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let skill_dir = format!("{}/.claude/skills/aether", home);
@@ -108,41 +117,59 @@ fn run_setup() -> io::Result<()> {
     println!();
 
     let steps: &[(&str, Box<dyn Fn() -> bool>)] = &[
-        ("Installing skill", Box::new(|| {
-            let _ = std::fs::create_dir_all(&skill_dir);
-            Command::new("curl")
+        (
+            "Installing skill",
+            Box::new(|| {
+                let _ = std::fs::create_dir_all(&skill_dir);
+                Command::new("curl")
                 .args(["-fsSL",
                     "https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/skills/aether/SKILL.md",
                     "-o", &format!("{}/SKILL.md", skill_dir)])
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
-        })),
-        ("Installing metrics hook", Box::new(|| {
-            let _ = std::fs::create_dir_all(&hooks_dir);
-            let hook_path = format!("{}/aether-metrics.py.off", hooks_dir);
-            let hook_active = format!("{}/aether-metrics.py", hooks_dir);
-            if std::path::Path::new(&hook_path).exists() || std::path::Path::new(&hook_active).exists() {
-                return true;
-            }
-            let ok = Command::new("curl")
+            }),
+        ),
+        (
+            "Installing metrics hook",
+            Box::new(|| {
+                let _ = std::fs::create_dir_all(&hooks_dir);
+                let hook_active = format!("{}/aether-metrics.py", hooks_dir);
+                let hook_off = format!("{}/aether-metrics.py.off", hooks_dir);
+                // If inactive version exists, activate it
+                if std::path::Path::new(&hook_off).exists() {
+                    let _ = std::fs::rename(&hook_off, &hook_active);
+                    return true;
+                }
+                if std::path::Path::new(&hook_active).exists() {
+                    return true;
+                }
+                // Download and install active
+                let ok = Command::new("curl")
                 .args(["-fsSL",
                     "https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/hooks/aether-metrics.py",
-                    "-o", &hook_path])
+                    "-o", &hook_active])
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false);
-            #[cfg(unix)]
-            if ok {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
-            }
-            ok
-        })),
-        ("Registering hooks", Box::new(|| {
-            Command::new("python3")
-                .arg("-c")
-                .arg(format!(r#"
+                #[cfg(unix)]
+                if ok {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &hook_active,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+                ok
+            }),
+        ),
+        (
+            "Registering hooks",
+            Box::new(|| {
+                Command::new("python3")
+                    .arg("-c")
+                    .arg(format!(
+                        r#"
 import json, os
 path = "{}"
 settings = {{}}
@@ -159,11 +186,14 @@ if not any(cmd in h.get("command","") for e in stop for h in e.get("hooks",[])):
     settings["hooks"] = hooks
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path,"w") as f: json.dump(settings, f, indent=2)
-"#, settings_path))
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        })),
+"#,
+                        settings_path
+                    ))
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            }),
+        ),
     ];
 
     for (label, action) in steps {
@@ -183,14 +213,54 @@ if not any(cmd in h.get("command","") for e in stop for h in e.get("hooks",[])):
         }
     }
 
+    let mut config = AetherConfig::load();
+    config.enable(ProviderKind::Claude);
+    let _ = config.save();
+
     println!();
     println!("  \x1b[2m─────────────────────\x1b[0m");
-    println!("  \x1b[1;31m✓\x1b[0m Setup complete");
+    println!("  \x1b[1;31m✓\x1b[0m Claude setup complete");
     println!();
-    println!("  \x1b[2mRun\x1b[0m  \x1b[1maether watch\x1b[0m   \x1b[2mto start\x1b[0m");
-    println!("  \x1b[2mType\x1b[0m \x1b[1m/aether\x1b[0m       \x1b[2min Claude Code to enable metrics\x1b[0m");
+    println!("  \x1b[2mRun\x1b[0m  \x1b[1maether watch\x1b[0m          \x1b[2mto choose a provider\x1b[0m");
+    println!("  \x1b[2mor\x1b[0m   \x1b[1maether watch claude\x1b[0m   \x1b[2mto open Claude sessions\x1b[0m");
+    println!("  \x1b[2mMetrics are now active for all new Claude Code sessions\x1b[0m");
     println!();
 
+    Ok(())
+}
+
+fn print_setup_status() -> io::Result<()> {
+    let config = AetherConfig::load();
+    println!("aether setup");
+    println!();
+    for provider in ProviderKind::ALL {
+        let enabled = if config.is_enabled(provider) {
+            "enabled"
+        } else {
+            "not enabled"
+        };
+        println!("  {:<8} {}", provider.id(), enabled);
+    }
+    println!();
+    println!("Run `aether setup claude` or `aether setup codex`.");
+    Ok(())
+}
+
+fn run_setup_codex() -> io::Result<()> {
+    let mut config = AetherConfig::load();
+    config.enable(ProviderKind::Codex);
+    config.save()?;
+
+    println!();
+    println!("  \x1b[31m●\x1b[0m Codex provider enabled");
+    println!();
+    println!(
+        "  \x1b[2mAether will watch\x1b[0m  \x1b[1m{}\x1b[0m",
+        provider::codex_sessions_dir().display()
+    );
+    println!("  \x1b[2mRun\x1b[0m  \x1b[1maether watch\x1b[0m         \x1b[2mto choose a provider\x1b[0m");
+    println!("  \x1b[2mor\x1b[0m   \x1b[1maether watch codex\x1b[0m   \x1b[2mto open Codex sessions\x1b[0m");
+    println!();
     Ok(())
 }
 
@@ -209,8 +279,12 @@ async fn run_app(
             Some(AppEvent::Key(key)) => {
                 // Any key press during boot skips to main view
                 if app.view == View::Boot {
-                    app.view = if app.engine.is_live() {
-                        View::Sessions
+                    app.view = if let Some(live) = app.engine.live_engine() {
+                        if live.active_provider.is_some() {
+                            View::Sessions
+                        } else {
+                            View::Providers
+                        }
                     } else {
                         View::Agent
                     };
@@ -219,11 +293,24 @@ async fn run_app(
                 }
             }
             Some(AppEvent::MouseScroll { column, up }) => {
-                if app.view == View::Sessions {
+                if app.view == View::Providers {
+                    if let Some(live) = app.engine.live_engine() {
+                        let count = live.provider_statuses().len();
+                        if count > 0 {
+                            app.provider_list_cursor = if up {
+                                app.provider_list_cursor.saturating_sub(1)
+                            } else {
+                                (app.provider_list_cursor + 1).min(count.saturating_sub(1))
+                            };
+                        }
+                    }
+                } else if app.view == View::Sessions {
                     // Mouse scroll moves the cursor in sessions list
                     if let Some(live) = app.engine.live_engine() {
                         let indices: Vec<usize> = live.active_sessions().map(|(i, _)| i).collect();
-                        if let Some(pos) = indices.iter().position(|&i| i == app.session_list_cursor) {
+                        if let Some(pos) =
+                            indices.iter().position(|&i| i == app.session_list_cursor)
+                        {
                             let new_pos = if up {
                                 pos.saturating_sub(1)
                             } else {
@@ -243,9 +330,10 @@ async fn run_app(
                     app.pane_scrolls.insert(usize::MAX, new_val);
                 } else if app.view == View::Agent {
                     // Find which pane the mouse is over
-                    let pane = app.pane_columns.iter().position(|(x_start, x_end)| {
-                        column >= *x_start && column < *x_end
-                    });
+                    let pane = app
+                        .pane_columns
+                        .iter()
+                        .position(|(x_start, x_end)| column >= *x_start && column < *x_end);
                     if let Some(pane_idx) = pane {
                         let cur = *app.pane_scrolls.get(&pane_idx).unwrap_or(&0);
                         let max = app.pane_max_scrolls.get(&pane_idx).copied().unwrap_or(0);
@@ -266,8 +354,12 @@ async fn run_app(
                     app.engine.tick(app.session_locked);
                     // After boot: always go to session list in live mode
                     if app.boot_ticks >= 54 {
-                        app.view = if app.engine.is_live() {
-                            View::Sessions
+                        app.view = if let Some(live) = app.engine.live_engine() {
+                            if live.active_provider.is_some() {
+                                View::Sessions
+                            } else {
+                                View::Providers
+                            }
                         } else {
                             View::Agent
                         };
@@ -275,11 +367,14 @@ async fn run_app(
                 } else if !app.paused {
                     // Track turn count before tick for auto-follow
                     let prev_turn_count = if app.view == View::Graph {
-                        app.engine.live_engine()
+                        app.engine
+                            .live_engine()
                             .and_then(|e| e.sessions.get(e.active_idx))
                             .map(|s| s.usage.turn_count())
                             .unwrap_or(0)
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     let was_on_last = app.view == View::Graph
                         && app.selected_dot >= prev_turn_count.saturating_sub(1);
 
@@ -290,7 +385,9 @@ async fn run_app(
 
                     // Auto-follow: if user was on last dot, stay on last dot
                     if was_on_last {
-                        let new_count = app.engine.live_engine()
+                        let new_count = app
+                            .engine
+                            .live_engine()
                             .and_then(|e| e.sessions.get(e.active_idx))
                             .map(|s| s.usage.turn_count())
                             .unwrap_or(0);
@@ -323,6 +420,41 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             return;
         }
         _ => {}
+    }
+
+    if app.view == View::Providers {
+        match key.code {
+            KeyCode::Down => {
+                if let Some(live) = app.engine.live_engine() {
+                    let count = live.provider_statuses().len();
+                    if count > 0 {
+                        app.provider_list_cursor = (app.provider_list_cursor + 1) % count;
+                    }
+                }
+            }
+            KeyCode::Up => {
+                if let Some(live) = app.engine.live_engine() {
+                    let count = live.provider_statuses().len();
+                    if count > 0 {
+                        app.provider_list_cursor = (app.provider_list_cursor + count - 1) % count;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(live) = app.engine.live_engine_mut() {
+                    let statuses = live.provider_statuses();
+                    if let Some(status) = statuses.get(app.provider_list_cursor) {
+                        live.select_provider(status.kind);
+                        app.session_list_cursor = live.active_idx;
+                        app.session_locked = false;
+                        app.session_list_scroll = 0;
+                        app.view = View::Sessions;
+                    }
+                }
+            }
+            _ => {}
+        }
+        return;
     }
 
     // Session list view
@@ -368,7 +500,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 if let Some(live) = app.engine.live_engine() {
                     let indices: Vec<usize> = live.active_sessions().map(|(i, _)| i).collect();
                     if let Some(pos) = indices.iter().position(|&i| i == app.session_list_cursor) {
-                        app.session_list_cursor = indices[(pos + indices.len() - 1) % indices.len()];
+                        app.session_list_cursor =
+                            indices[(pos + indices.len() - 1) % indices.len()];
                     } else if let Some(&last) = indices.last() {
                         app.session_list_cursor = last;
                     }
@@ -381,13 +514,22 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.session_locked = true;
                 app.view = View::Graph;
                 // Start at last turn
-                let turn_count = app.engine.live_engine()
+                let turn_count = app
+                    .engine
+                    .live_engine()
                     .and_then(|e| e.sessions.get(e.active_idx))
                     .map(|s| s.usage.turn_count())
                     .unwrap_or(0);
                 app.selected_dot = turn_count.saturating_sub(1);
                 app.focused_pane = 0;
                 app.pane_scrolls.clear();
+            }
+            KeyCode::Esc => {
+                if let Some(live) = app.engine.live_engine_mut() {
+                    live.clear_provider();
+                }
+                app.view = View::Providers;
+                app.session_locked = false;
             }
             KeyCode::Char('r') => {
                 // Start rename with current name pre-filled
@@ -404,7 +546,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
     // Graph view keys
     if app.view == View::Graph {
-        let turn_count = app.engine.live_engine()
+        let turn_count = app
+            .engine
+            .live_engine()
             .and_then(|e| e.sessions.get(e.active_idx))
             .map(|s| s.usage.turn_count())
             .unwrap_or(0);
@@ -472,19 +616,22 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             }
             // e = expand/collapse all content (prompt + response + agent)
             KeyCode::Char('e') => {
-                app.expanded_view = if app.expanded_view.is_some() { None } else { Some('e') };
+                app.expanded_view = if app.expanded_view.is_some() {
+                    None
+                } else {
+                    Some('e')
+                };
                 app.pane_scrolls.insert(usize::MAX, 0);
             }
             KeyCode::Down => {
                 // Switch to next session
                 if let Some(live) = app.engine.live_engine_mut() {
-                    let len = live.sessions.len();
-                    if len > 0 {
-                        live.active_idx = (live.active_idx + 1) % len;
-                        app.session_list_cursor = live.active_idx;
-                    }
+                    live.next_session();
+                    app.session_list_cursor = live.active_idx;
                 }
-                let turn_count = app.engine.live_engine()
+                let turn_count = app
+                    .engine
+                    .live_engine()
                     .and_then(|e| e.sessions.get(e.active_idx))
                     .map(|s| s.usage.turn_count())
                     .unwrap_or(0);
@@ -494,13 +641,12 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Up => {
                 // Switch to previous session
                 if let Some(live) = app.engine.live_engine_mut() {
-                    let len = live.sessions.len();
-                    if len > 0 {
-                        live.active_idx = (live.active_idx + len - 1) % len;
-                        app.session_list_cursor = live.active_idx;
-                    }
+                    live.prev_session();
+                    app.session_list_cursor = live.active_idx;
                 }
-                let turn_count = app.engine.live_engine()
+                let turn_count = app
+                    .engine
+                    .live_engine()
                     .and_then(|e| e.sessions.get(e.active_idx))
                     .map(|s| s.usage.turn_count())
                     .unwrap_or(0);
@@ -578,7 +724,11 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Down => {
             let cur = app.scroll_offset();
-            let max = app.pane_max_scrolls.get(&app.focused_pane).copied().unwrap_or(0);
+            let max = app
+                .pane_max_scrolls
+                .get(&app.focused_pane)
+                .copied()
+                .unwrap_or(0);
             app.set_scroll_offset(cur.saturating_add(1).min(max));
         }
         KeyCode::Up => {

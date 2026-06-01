@@ -38,9 +38,17 @@ pub enum ScenarioStep {
 
 enum StepState {
     Idle,
-    Thinking { agent: String, remaining: u64 },
-    Streaming { message_idx: usize, chars_per_tick: usize },
-    Pausing { remaining: u64 },
+    Thinking {
+        agent: String,
+        remaining: u64,
+    },
+    Streaming {
+        message_idx: usize,
+        chars_per_tick: usize,
+    },
+    Pausing {
+        remaining: u64,
+    },
 }
 
 pub struct MockEngine {

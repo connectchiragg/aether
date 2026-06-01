@@ -12,6 +12,11 @@ use crate::model::AgentStatus;
 use crate::theme;
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.view == View::Providers && app.engine.is_live() {
+        render_provider_list(frame, app, area);
+        return;
+    }
+
     // Show session list view
     if app.view == View::Sessions && app.engine.is_live() {
         render_session_list(frame, app, area);
@@ -53,15 +58,10 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         let status_span = match &agent.status {
-            AgentStatus::Idle => {
-                Span::styled(" ", theme::dim_style())
-            }
+            AgentStatus::Idle => Span::styled(" ", theme::dim_style()),
             AgentStatus::Thinking { dots } => {
                 let d = ".".repeat((*dots % 4) + 1);
-                Span::styled(
-                    format!(" {d} "),
-                    Style::default().fg(agent.color),
-                )
+                Span::styled(format!(" {d} "), Style::default().fg(agent.color))
             }
             AgentStatus::Streaming => Span::styled(
                 "  ",
@@ -69,9 +69,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     .fg(agent.color)
                     .add_modifier(Modifier::BOLD),
             ),
-            AgentStatus::WaitingForInput => {
-                Span::styled("  ", Style::default().fg(theme::warm()))
-            }
+            AgentStatus::WaitingForInput => Span::styled("  ", Style::default().fg(theme::warm())),
         };
 
         let title = Line::from(vec![
@@ -81,10 +79,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     .fg(agent.color)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("{}", agent.role),
-                theme::subtle_style(),
-            ),
+            Span::styled(format!("{}", agent.role), theme::subtle_style()),
             status_span,
         ]);
 
@@ -112,8 +107,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     let separator_text = if turn.prompt.is_empty() {
                         format!(" Turn {} ", turn.turn_index)
                     } else {
-                        let prompt_preview: String =
-                            turn.prompt.chars().take(36).collect();
+                        let prompt_preview: String = turn.prompt.chars().take(36).collect();
                         let ellipsis = if turn.prompt.len() > 36 { ".." } else { "" };
                         format!(" Turn {}: {prompt_preview}{ellipsis} ", turn.turn_index)
                     };
@@ -198,14 +192,26 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
         // Estimate visual line count using Line::width()
         let pane_width = inner.width.max(1) as usize;
-        let visual_height: u16 = lines.iter().map(|line| {
-            let w = line.width();
-            if w == 0 { 1 } else { ((w.saturating_sub(1)) / pane_width + 1) as u16 }
-        }).sum();
+        let visual_height: u16 = lines
+            .iter()
+            .map(|line| {
+                let w = line.width();
+                if w == 0 {
+                    1
+                } else {
+                    ((w.saturating_sub(1)) / pane_width + 1) as u16
+                }
+            })
+            .sum();
         let max_scroll = visual_height.saturating_sub(inner.height) + 20;
         app.pane_max_scrolls.insert(i, max_scroll);
 
-        let scroll_y = app.pane_scrolls.get(&i).copied().unwrap_or(0).min(max_scroll);
+        let scroll_y = app
+            .pane_scrolls
+            .get(&i)
+            .copied()
+            .unwrap_or(0)
+            .min(max_scroll);
 
         let text = Text::from(lines);
         let para = Paragraph::new(text)
@@ -216,19 +222,101 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn render_provider_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    let live = app.engine.live_engine().unwrap();
+    let providers = live.provider_statuses();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::dim_style())
+        .title(Line::from(vec![
+            Span::styled(
+                " providers ",
+                Style::default()
+                    .fg(theme::accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("({}) ", providers.len()), theme::subtle_style()),
+        ]));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (idx, provider) in providers.iter().enumerate() {
+        let selected = idx == app.provider_list_cursor;
+        let (cursor, name_style, detail_style) = if selected {
+            (
+                Span::styled(
+                    "  > ",
+                    Style::default()
+                        .fg(theme::accent())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::subtle()),
+            )
+        } else {
+            (
+                Span::styled("    ", theme::dim_style()),
+                Style::default().fg(theme::subtle()),
+                theme::dim_style(),
+            )
+        };
+
+        let recent = provider.last_modified > 0 && now.saturating_sub(provider.last_modified) < 300;
+        let status_indicator = if recent {
+            Span::styled("● ", Style::default().fg(theme::accent()))
+        } else if provider.available {
+            Span::styled("○ ", Style::default().fg(theme::warm()))
+        } else {
+            Span::styled("○ ", theme::dim_style())
+        };
+
+        lines.push(Line::from(vec![
+            cursor,
+            status_indicator,
+            Span::styled(provider.kind.display_name(), name_style),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "      {}  {} sessions",
+                provider.state_label(),
+                provider.session_count
+            ),
+            detail_style,
+        )));
+        lines.push(Line::from(""));
+    }
+
+    let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+    frame.render_widget(para, inner);
+}
+
 fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let live = app.engine.live_engine().unwrap();
     let session_count = live.session_count();
-    let visible: Vec<(usize, String, usize, f64, u64, u64)> = live
+    let visible: Vec<(usize, String, String, usize, f64, bool, u64, u64)> = live
         .active_sessions()
-        .map(|(i, s)| (
-            i,
-            s.name.clone(),
-            s.usage.turn_count(),
-            s.usage.total_cost(),
-            s.usage.total_input() + s.usage.total_output(),
-            s.last_modified,
-        ))
+        .map(|(i, s)| {
+            (
+                i,
+                s.name.clone(),
+                s.source.clone(),
+                s.usage.turn_count(),
+                s.usage.total_cost(),
+                s.usage.cost_is_known(),
+                s.usage.total_input() + s.usage.total_output(),
+                s.last_modified,
+            )
+        })
         .collect();
 
     let block = Block::default()
@@ -241,10 +329,7 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("({}) ", session_count),
-                theme::subtle_style(),
-            ),
+            Span::styled(format!("({}) ", session_count), theme::subtle_style()),
         ]));
 
     let inner = block.inner(area);
@@ -256,7 +341,10 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let viewport_items = inner.height / item_height;
 
     // Find which position in the visible list the cursor is at
-    let cursor_pos = visible.iter().position(|(i, ..)| *i == app.session_list_cursor).unwrap_or(0) as u16;
+    let cursor_pos = visible
+        .iter()
+        .position(|(i, ..)| *i == app.session_list_cursor)
+        .unwrap_or(0) as u16;
 
     // Derive scroll from cursor position (keep cursor in viewport)
     if cursor_pos < app.session_list_scroll / item_height {
@@ -275,14 +363,23 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    for (real_idx, name, turn_count, cost, total_tokens, last_modified) in &visible {
+    for (real_idx, name, source, turn_count, cost, cost_known, total_tokens, last_modified) in
+        &visible
+    {
         let is_selected = *real_idx == app.session_list_cursor;
 
         // Cursor and highlight
         let (cursor, name_style, detail_style) = if is_selected {
             (
-                Span::styled("  > ", Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Span::styled(
+                    "  > ",
+                    Style::default()
+                        .fg(theme::accent())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
                 Style::default().fg(theme::subtle()),
             )
         } else {
@@ -310,7 +407,9 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 status_indicator,
                 Span::styled(
                     format!("{buf}▏"),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
         } else {
@@ -323,11 +422,17 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
         // Detail line with cost and tokens
         let detail = if *turn_count == 0 {
-            String::new()
+            format!("      {source}")
         } else {
-            format!("      {}  {}  {turn_count} turns",
-                crate::model::format_cost(*cost),
-                crate::model::format_tokens(*total_tokens))
+            let cost_label = if *cost_known {
+                crate::model::format_cost(*cost)
+            } else {
+                "cost unknown".to_string()
+            };
+            format!(
+                "      {source}  {cost_label}  {}  {turn_count} turns",
+                crate::model::format_tokens(*total_tokens)
+            )
         };
         lines.push(Line::from(Span::styled(detail, detail_style)));
 
@@ -365,7 +470,7 @@ fn render_placeholder(frame: &mut Frame, app: &App, area: Rect) {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "run /tui in your Claude Code session",
+                "run a supported coding agent, then refresh this view",
                 theme::dim_style(),
             )),
         ]

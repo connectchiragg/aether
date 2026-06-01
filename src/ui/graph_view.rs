@@ -5,12 +5,20 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::model::{format_cost, format_tokens, TurnUsage};
 use crate::theme;
 
-const METRIC_NAMES: &[&str] = &["cost", "friction", "hallucination", "confidence", "acceptance", "performance"];
+const METRIC_NAMES: &[&str] = &[
+    "cost",
+    "friction",
+    "hallucination",
+    "confidence",
+    "acceptance",
+    "performance",
+];
 
 fn metric_color(idx: usize) -> Color {
     if theme::is_truecolor() {
@@ -53,14 +61,18 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         app.selected_dot = turns.len().saturating_sub(1);
     }
 
-    let chunks = Layout::vertical([
-        Constraint::Percentage(40),
-        Constraint::Percentage(60),
-    ])
-    .split(area);
+    let chunks =
+        Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
 
     let selected = app.selected_dot;
-    render_graph(frame, &turns, selected, app.graph_metric, app.graph_zoom, chunks[0]);
+    render_graph(
+        frame,
+        &turns,
+        selected,
+        app.graph_metric,
+        app.graph_zoom,
+        chunks[0],
+    );
     let max_scroll = render_detail(frame, &turns, selected, app, chunks[1]);
     let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
     if cur > max_scroll {
@@ -72,23 +84,50 @@ fn render_empty(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim_style())
-        .title(Span::styled(" cost explorer ", Style::default().fg(theme::accent())));
+        .title(Span::styled(
+            " cost explorer ",
+            Style::default().fg(theme::accent()),
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let msg = Paragraph::new(Line::from(Span::styled("no usage data yet", theme::subtle_style())))
-        .alignment(ratatui::layout::Alignment::Center);
-    let pad = Layout::vertical([Constraint::Length(inner.height / 2), Constraint::Min(0)]).split(inner);
+    let msg = Paragraph::new(Line::from(Span::styled(
+        "no usage data yet",
+        theme::subtle_style(),
+    )))
+    .alignment(ratatui::layout::Alignment::Center);
+    let pad =
+        Layout::vertical([Constraint::Length(inner.height / 2), Constraint::Min(0)]).split(inner);
     frame.render_widget(msg, pad[1]);
 }
 
 fn metric_value(turn: &TurnUsage, metric: u8) -> f64 {
     match metric {
         0 => turn.cost,
-        1 => turn.metrics.as_ref().map(|m| m.friction as f64).unwrap_or(0.0),
-        2 => turn.metrics.as_ref().map(|m| m.hallucination as f64).unwrap_or(0.0),
-        3 => turn.metrics.as_ref().map(|m| m.confidence as f64).unwrap_or(0.0),
-        4 => turn.metrics.as_ref().map(|m| m.acceptance as f64).unwrap_or(0.0),
-        5 => turn.metrics.as_ref().map(|m| m.performance as f64).unwrap_or(0.0),
+        1 => turn
+            .metrics
+            .as_ref()
+            .map(|m| m.friction as f64)
+            .unwrap_or(0.0),
+        2 => turn
+            .metrics
+            .as_ref()
+            .map(|m| m.hallucination as f64)
+            .unwrap_or(0.0),
+        3 => turn
+            .metrics
+            .as_ref()
+            .map(|m| m.confidence as f64)
+            .unwrap_or(0.0),
+        4 => turn
+            .metrics
+            .as_ref()
+            .map(|m| m.acceptance as f64)
+            .unwrap_or(0.0),
+        5 => turn
+            .metrics
+            .as_ref()
+            .map(|m| m.performance as f64)
+            .unwrap_or(0.0),
         _ => 0.0,
     }
 }
@@ -105,29 +144,56 @@ fn crimson_gradient(frac: f64) -> Color {
     }
 }
 
-fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_metric: u8, zoom: i8, area: Rect) {
+fn render_graph(
+    frame: &mut Frame,
+    turns: &[TurnUsage],
+    selected: usize,
+    graph_metric: u8,
+    zoom: i8,
+    area: Rect,
+) {
     let metric_idx = graph_metric as usize % METRIC_NAMES.len();
     let metric_name = METRIC_NAMES[metric_idx];
 
-    let mut title_spans = vec![
-        Span::styled(format!(" {} ", metric_name), Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
-    ];
+    let mut title_spans = vec![Span::styled(
+        format!(" {} ", metric_name),
+        Style::default()
+            .fg(theme::accent())
+            .add_modifier(Modifier::BOLD),
+    )];
 
     if graph_metric == 0 {
         let total_cost: f64 = turns.iter().map(|t| t.cost).sum();
+        let cost_known = turns.iter().any(|t| t.cost_known || t.cost > 0.0);
         title_spans.push(Span::styled(
-            format!("── {} total ── {} turns ", format_cost(total_cost), turns.len()),
+            if cost_known {
+                format!(
+                    "── {} total ── {} turns ",
+                    format_cost(total_cost),
+                    turns.len()
+                )
+            } else {
+                format!("── cost unknown ── {} turns ", turns.len())
+            },
             theme::subtle_style(),
         ));
     } else {
-        title_spans.push(Span::styled(format!("── {} turns ", turns.len()), theme::subtle_style()));
+        title_spans.push(Span::styled(
+            format!("── {} turns ", turns.len()),
+            theme::subtle_style(),
+        ));
     }
 
     // Metric selector — show full names
     title_spans.push(Span::styled("── ", theme::dim_style()));
     for (i, name) in METRIC_NAMES.iter().enumerate() {
         if i as u8 == graph_metric {
-            title_spans.push(Span::styled(format!("[{}]", name), Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)));
+            title_spans.push(Span::styled(
+                format!("[{}]", name),
+                Style::default()
+                    .fg(theme::accent())
+                    .add_modifier(Modifier::BOLD),
+            ));
         } else {
             title_spans.push(Span::styled(format!(" {} ", name), theme::dim_style()));
         }
@@ -141,14 +207,17 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if inner.width < 4 || inner.height < 3 { return; }
+    if inner.width < 4 || inner.height < 3 {
+        return;
+    }
 
-    let max_val = if graph_metric == 0 {
+    let raw_max_val = if graph_metric == 0 {
         turns.iter().map(|t| t.cost).fold(0.0_f64, f64::max)
     } else {
         1.0
     };
-    if max_val == 0.0 { return; }
+    let flat_graph = raw_max_val == 0.0;
+    let max_val = if flat_graph { 1.0 } else { raw_max_val };
 
     let graph_height = inner.height.saturating_sub(2) as f64;
     let graph_width = inner.width as usize;
@@ -179,15 +248,22 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
     let inset = max_label_len / 2 + 1;
     let spacing = if num_visible > 1 {
         (graph_width.saturating_sub(inset * 2)) as f64 / (num_visible - 1) as f64
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
-    let mut grid: Vec<Vec<(char, Style)>> = vec![vec![(' ', Style::default()); graph_width]; inner.height as usize];
+    let mut grid: Vec<Vec<(char, Style)>> =
+        vec![vec![(' ', Style::default()); graph_width]; inner.height as usize];
     let mut dot_positions: Vec<(usize, usize)> = Vec::new();
 
     for (i, turn) in visible_turns.iter().enumerate() {
-        let x = if num_visible > 1 { (inset as f64 + i as f64 * spacing) as usize } else { graph_width / 2 };
+        let x = if num_visible > 1 {
+            (inset as f64 + i as f64 * spacing) as usize
+        } else {
+            graph_width / 2
+        };
         let val = metric_value(turn, graph_metric);
-        let y_frac = val / max_val;
+        let y_frac = if flat_graph { 0.5 } else { val / max_val };
         let y = (graph_height * (1.0 - y_frac)) as usize + 1;
         dot_positions.push((x.min(graph_width - 1), y.min(inner.height as usize - 2)));
     }
@@ -202,18 +278,26 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
         let ls = Style::default().fg(line_color);
 
         for x in (x1 + 1)..=mid_x {
-            if x < graph_width { grid[y1][x] = ('─', ls); }
+            if x < graph_width {
+                grid[y1][x] = ('─', ls);
+            }
         }
         let (ya, yb) = if y1 < y2 { (y1, y2) } else { (y2, y1) };
         for y in (ya + 1)..yb {
-            if mid_x < graph_width && y < inner.height as usize { grid[y][mid_x] = ('│', ls); }
+            if mid_x < graph_width && y < inner.height as usize {
+                grid[y][mid_x] = ('│', ls);
+            }
         }
         if mid_x < graph_width && y1 != y2 {
             grid[y1][mid_x] = (if y2 > y1 { '╮' } else { '╯' }, ls);
-            if y2 < inner.height as usize { grid[y2][mid_x] = (if y2 > y1 { '╰' } else { '╭' }, ls); }
+            if y2 < inner.height as usize {
+                grid[y2][mid_x] = (if y2 > y1 { '╰' } else { '╭' }, ls);
+            }
         }
         for x in (mid_x + 1)..x2 {
-            if x < graph_width && y2 < inner.height as usize { grid[y2][x] = ('─', ls); }
+            if x < graph_width && y2 < inner.height as usize {
+                grid[y2][x] = ('─', ls);
+            }
         }
     }
 
@@ -224,63 +308,130 @@ fn render_graph(frame: &mut Frame, turns: &[TurnUsage], selected: usize, graph_m
         let has_agents = !visible_turns[i].agents.is_empty();
         let ch = if has_agents { '◆' } else { '●' };
         let style = if is_selected {
-            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD)
         } else {
             let frac = i as f64 / num_visible.max(1) as f64;
             Style::default().fg(crimson_gradient(frac))
         };
-        if x < graph_width && y < inner.height as usize { grid[y][x] = (ch, style); }
+        if x < graph_width && y < inner.height as usize {
+            grid[y][x] = (ch, style);
+        }
     }
 
     // Labels — skip when zoomed out for clean trend view
     if !zoomed_out {
         let label_row = inner.height as usize - 1;
         let mut occupied: Vec<bool> = vec![false; graph_width + 4];
-        let place_label = |grid: &mut Vec<Vec<(char, Style)>>, occupied: &mut Vec<bool>, x: usize, label: &str, style: Style| -> bool {
+        let place_label = |grid: &mut Vec<Vec<(char, Style)>>,
+                           occupied: &mut Vec<bool>,
+                           x: usize,
+                           label: &str,
+                           style: Style|
+         -> bool {
             let centered = x.saturating_sub(label.len() / 2);
-            let label_x = if centered + label.len() > graph_width { graph_width.saturating_sub(label.len()) } else { centered };
+            let label_x = if centered + label.len() > graph_width {
+                graph_width.saturating_sub(label.len())
+            } else {
+                centered
+            };
             let start = label_x.saturating_sub(1);
             let end = (label_x + label.len() + 1).min(occupied.len());
-            if occupied[start..end].iter().any(|&o| o) { return false; }
-            for (j, ch) in label.chars().enumerate() {
-                if label_x + j < graph_width { grid[label_row][label_x + j] = (ch, style); }
+            if occupied[start..end].iter().any(|&o| o) {
+                return false;
             }
-            for p in label_x..label_x + label.len() { if p < occupied.len() { occupied[p] = true; } }
+            for (j, ch) in label.chars().enumerate() {
+                if label_x + j < graph_width {
+                    grid[label_row][label_x + j] = (ch, style);
+                }
+            }
+            for p in label_x..label_x + label.len() {
+                if p < occupied.len() {
+                    occupied[p] = true;
+                }
+            }
             true
         };
         if let Some(&(x, _)) = dot_positions.get(selected.saturating_sub(start_idx)) {
-            place_label(&mut grid, &mut occupied, x, &format!("{}", selected + 1), Style::default().fg(theme::accent()));
+            place_label(
+                &mut grid,
+                &mut occupied,
+                x,
+                &format!("{}", selected + 1),
+                Style::default().fg(theme::accent()),
+            );
         }
         for (i, &(x, _)) in dot_positions.iter().enumerate() {
             let actual_idx = start_idx + i;
-            if actual_idx == selected { continue; }
+            if actual_idx == selected {
+                continue;
+            }
             let show = num_visible <= 20 || i % (num_visible / 10).max(1) == 0;
-            if show { place_label(&mut grid, &mut occupied, x, &format!("{}", actual_idx + 1), theme::dim_style()); }
+            if show {
+                place_label(
+                    &mut grid,
+                    &mut occupied,
+                    x,
+                    &format!("{}", actual_idx + 1),
+                    theme::dim_style(),
+                );
+            }
         }
     }
 
     if let Some(&(x, y)) = dot_positions.get(selected.saturating_sub(start_idx)) {
-        if y > 0 && x < graph_width { grid[y - 1][x] = ('▼', Style::default().fg(theme::accent())); }
+        if y > 0 && x < graph_width {
+            grid[y - 1][x] = ('▼', Style::default().fg(theme::accent()));
+        }
     }
 
-    let lines: Vec<Line> = grid.into_iter().map(|row| {
-        Line::from(row.into_iter().map(|(ch, style)| Span::styled(ch.to_string(), style)).collect::<Vec<_>>())
-    }).collect();
+    let lines: Vec<Line> = grid
+        .into_iter()
+        .map(|row| {
+            Line::from(
+                row.into_iter()
+                    .map(|(ch, style)| Span::styled(ch.to_string(), style))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
-fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &App, area: Rect) -> u16 {
+fn render_detail(
+    frame: &mut Frame,
+    turns: &[TurnUsage],
+    selected: usize,
+    app: &App,
+    area: Rect,
+) -> u16 {
     let turn = &turns[selected];
     let total_turns = turns.len();
 
     let mut title_spans = vec![
-        Span::styled(format!(" Turn {} ", selected + 1), Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" Turn {} ", selected + 1),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("── ", theme::dim_style()),
-        Span::styled(format_cost(turn.cost), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            cost_label(turn),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
     ];
     if let Some(ref buf) = app.graph_jump_input {
         title_spans.push(Span::styled(" ── go to: ", theme::dim_style()));
-        title_spans.push(Span::styled(format!("{buf}▏"), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+        title_spans.push(Span::styled(
+            format!("{buf}▏"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
 
     let block = Block::default()
@@ -298,7 +449,12 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
     let show_full_prompt = app.expanded_view.is_some();
     lines.push(Line::from(vec![
         Span::styled("  ▸ ", Style::default().fg(theme::accent())),
-        Span::styled("PROMPT", Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "PROMPT",
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ),
         if !show_full_prompt && turn.prompt.len() > PROMPT_PREVIEW_LEN {
             Span::styled("  (e to expand)", Style::default().fg(theme::dim()))
         } else if show_full_prompt {
@@ -330,18 +486,33 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
         let show_full = app.expanded_view.is_some();
         lines.push(Line::from(vec![
             Span::styled("  ◂ ", Style::default().fg(theme::primary())),
-            Span::styled("RESPONSE", Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "RESPONSE",
+                Style::default()
+                    .fg(theme::primary())
+                    .add_modifier(Modifier::BOLD),
+            ),
             if !show_full && turn.response_text.len() > AGENT_RESPONSE_PREVIEW_LEN {
                 Span::styled("  (e to expand)", Style::default().fg(theme::dim()))
             } else if show_full {
                 Span::styled("  (e to collapse)", Style::default().fg(theme::dim()))
-            } else { Span::raw("") },
+            } else {
+                Span::raw("")
+            },
         ]));
         let text = if show_full {
             turn.response_text.clone()
         } else {
-            let p: String = turn.response_text.chars().take(AGENT_RESPONSE_PREVIEW_LEN).collect();
-            if p.len() < turn.response_text.len() { format!("{}...", p) } else { p }
+            let p: String = turn
+                .response_text
+                .chars()
+                .take(AGENT_RESPONSE_PREVIEW_LEN)
+                .collect();
+            if p.len() < turn.response_text.len() {
+                format!("{}...", p)
+            } else {
+                p
+            }
         };
         for chunk in word_wrap(&text, wrap_width) {
             lines.push(Line::from(vec![
@@ -355,30 +526,52 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
     // ── STATS ──
     lines.push(Line::from(vec![
         Span::styled("  cost    ", theme::dim_style()),
-        Span::styled(format_cost(turn.cost), Style::default().fg(theme::accent())),
+        Span::styled(cost_label(turn), Style::default().fg(theme::accent())),
         Span::styled("     context  ", theme::dim_style()),
-        Span::styled(format!("↑{} cumulative", format_tokens(turn.cumulative_context)), Style::default().fg(theme::primary())),
+        Span::styled(
+            format!("↑{} cumulative", format_tokens(turn.cumulative_context)),
+            Style::default().fg(theme::primary()),
+        ),
         if turn.context_saved > 0 {
-            Span::styled(format!("  (saved {} tokens via sub-agents)", format_tokens(turn.context_saved)), theme::subtle_style())
+            Span::styled(
+                format!(
+                    "  (saved {} tokens via sub-agents)",
+                    format_tokens(turn.context_saved)
+                ),
+                theme::subtle_style(),
+            )
         } else {
             Span::raw("")
         },
     ]));
     lines.push(Line::from(vec![
         Span::styled("  tokens  ", theme::dim_style()),
-        Span::styled(format!("↑{}", format_tokens(turn.input_tokens)), Style::default().fg(theme::primary())),
+        Span::styled(
+            format!("↑{}", format_tokens(turn.input_tokens)),
+            Style::default().fg(theme::primary()),
+        ),
         Span::styled(" in  ", theme::dim_style()),
-        Span::styled(format!("↓{}", format_tokens(turn.output_tokens)), Style::default().fg(theme::warm())),
+        Span::styled(
+            format!("↓{}", format_tokens(turn.output_tokens)),
+            Style::default().fg(theme::warm()),
+        ),
         Span::styled(" out  ", theme::dim_style()),
         Span::styled(
-            format!("cache read: {}  cache write: {}", format_tokens(turn.cache_read_tokens), format_tokens(turn.cache_write_tokens)),
+            format!(
+                "cache read: {}  cache write: {}",
+                format_tokens(turn.cache_read_tokens),
+                format_tokens(turn.cache_write_tokens)
+            ),
             theme::subtle_style(),
         ),
     ]));
     lines.push(Line::from(""));
 
     // ── METRICS ──
-    lines.push(Line::from(Span::styled(format!("  {section_sep}"), theme::dim_style())));
+    lines.push(Line::from(Span::styled(
+        format!("  {section_sep}"),
+        theme::dim_style(),
+    )));
     if let Some(ref metrics) = turn.metrics {
         let bar_width = wrap_width.saturating_sub(22).min(35);
         let metric_items: &[(&str, f32)] = &[
@@ -393,17 +586,22 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             let filled = (*value as f64 * bar_width as f64) as usize;
             let empty = bar_width.saturating_sub(filled);
             // Thin bar with crimson gradient
-            let bar_filled: String = (0..filled).map(|j| {
-                let _ = j; // all same char
-                '▬'
-            }).collect();
+            let bar_filled: String = (0..filled)
+                .map(|j| {
+                    let _ = j; // all same char
+                    '▬'
+                })
+                .collect();
             let bar_empty: String = "─".repeat(empty);
             let frac = *value as f64;
             let bar_color = crimson_gradient(1.0 - frac); // brighter for higher values
             let pct = format!(" {:.0}%", value * 100.0);
 
             lines.push(Line::from(vec![
-                Span::styled(format!("  {} ", label), Style::default().fg(theme::subtle())),
+                Span::styled(
+                    format!("  {} ", label),
+                    Style::default().fg(theme::subtle()),
+                ),
                 Span::styled(bar_filled, Style::default().fg(bar_color)),
                 Span::styled(bar_empty, Style::default().fg(theme::dim())),
                 Span::styled(pct, Style::default().fg(theme::subtle())),
@@ -413,10 +611,17 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
 
         // Reasoning
         if !metrics.recap.is_empty() {
-            let purple = if theme::is_truecolor() { Color::Rgb(180, 130, 255) } else { Color::Magenta };
+            let purple = if theme::is_truecolor() {
+                Color::Rgb(180, 130, 255)
+            } else {
+                Color::Magenta
+            };
             lines.push(Line::from(vec![
                 Span::styled("  ◈ ", Style::default().fg(purple)),
-                Span::styled("REASONING", Style::default().fg(purple).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "REASONING",
+                    Style::default().fg(purple).add_modifier(Modifier::BOLD),
+                ),
             ]));
             for chunk in word_wrap(&metrics.recap, wrap_width) {
                 lines.push(Line::from(vec![
@@ -426,8 +631,10 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             }
             lines.push(Line::from(""));
         }
-    } else if selected >= total_turns.saturating_sub(2) && turn.output_tokens > 0
-        && turns.iter().any(|t| t.metrics.is_some()) {
+    } else if selected >= total_turns.saturating_sub(2)
+        && turn.output_tokens > 0
+        && turns.iter().any(|t| t.metrics.is_some())
+    {
         // Show "analyzing" only if this session has metrics (hook is active)
         let dot_count = ((app.tick / 8) % 4) as usize;
         let dots = ".".repeat(dot_count + 1);
@@ -439,10 +646,17 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
                 (40.0 + bright * 30.0) as u8,
                 (40.0 + bright * 20.0) as u8,
             )
-        } else if app.tick % 20 < 10 { Color::Red } else { Color::DarkGray };
+        } else if app.tick % 20 < 10 {
+            Color::Red
+        } else {
+            Color::DarkGray
+        };
         lines.push(Line::from(vec![
             Span::styled("  ◈ ", Style::default().fg(flicker_color)),
-            Span::styled(format!("analyzing{}", dots), Style::default().fg(flicker_color)),
+            Span::styled(
+                format!("analyzing{}", dots),
+                Style::default().fg(flicker_color),
+            ),
         ]));
         lines.push(Line::from(""));
     } else {
@@ -455,19 +669,39 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
 
     // ── AGENTS ──
     if !turn.agents.is_empty() {
-        lines.push(Line::from(Span::styled(format!("  {section_sep}"), theme::dim_style())));
+        lines.push(Line::from(Span::styled(
+            format!("  {section_sep}"),
+            theme::dim_style(),
+        )));
         lines.push(Line::from(Span::styled(
             format!("  ◆ {} agents spawned", turn.agents.len()),
-            Style::default().fg(theme::warm()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::warm())
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
 
         for agent in &turn.agents {
             lines.push(Line::from(vec![
-                Span::styled("  ◆ ", Style::default().fg(theme::warm()).add_modifier(Modifier::BOLD)),
-                Span::styled(&agent.name, Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    format!("  {}  ↑{} ↓{}", format_cost(agent.cost), format_tokens(agent.input_tokens), format_tokens(agent.output_tokens)),
+                    "  ◆ ",
+                    Style::default()
+                        .fg(theme::warm())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    &agent.name,
+                    Style::default()
+                        .fg(theme::primary())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  {}  ↑{} ↓{}",
+                        format_cost(agent.cost),
+                        format_tokens(agent.input_tokens),
+                        format_tokens(agent.output_tokens)
+                    ),
                     theme::subtle_style(),
                 ),
             ]));
@@ -479,16 +713,31 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             if !agent.prompt.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("    ▸ ", Style::default().fg(theme::accent())),
-                    Span::styled("REQUEST", Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "REQUEST",
+                        Style::default()
+                            .fg(theme::accent())
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     if !show_full_agent && agent.prompt.len() > AGENT_PROMPT_PREVIEW_LEN {
                         Span::styled("  (e to expand)", Style::default().fg(theme::dim()))
-                    } else { Span::raw("") },
+                    } else {
+                        Span::raw("")
+                    },
                 ]));
                 let text = if show_full_agent {
                     agent.prompt.clone()
                 } else {
-                    let p: String = agent.prompt.chars().take(AGENT_PROMPT_PREVIEW_LEN).collect();
-                    if p.len() < agent.prompt.len() { format!("{}...", p) } else { p }
+                    let p: String = agent
+                        .prompt
+                        .chars()
+                        .take(AGENT_PROMPT_PREVIEW_LEN)
+                        .collect();
+                    if p.len() < agent.prompt.len() {
+                        format!("{}...", p)
+                    } else {
+                        p
+                    }
                 };
                 for chunk in word_wrap(&text, wrap_width) {
                     lines.push(Line::from(vec![
@@ -503,16 +752,32 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
             if !agent.response_preview.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("    ◂ ", Style::default().fg(theme::primary())),
-                    Span::styled("RESPONSE", Style::default().fg(theme::primary()).add_modifier(Modifier::BOLD)),
-                    if !show_full_agent && agent.response_preview.len() > AGENT_RESPONSE_PREVIEW_LEN {
+                    Span::styled(
+                        "RESPONSE",
+                        Style::default()
+                            .fg(theme::primary())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    if !show_full_agent && agent.response_preview.len() > AGENT_RESPONSE_PREVIEW_LEN
+                    {
                         Span::styled("  (e to expand)", Style::default().fg(theme::dim()))
-                    } else { Span::raw("") },
+                    } else {
+                        Span::raw("")
+                    },
                 ]));
                 let text = if show_full_agent {
                     agent.response_preview.clone()
                 } else {
-                    let p: String = agent.response_preview.chars().take(AGENT_RESPONSE_PREVIEW_LEN).collect();
-                    if p.len() < agent.response_preview.len() { format!("{}...", p) } else { p }
+                    let p: String = agent
+                        .response_preview
+                        .chars()
+                        .take(AGENT_RESPONSE_PREVIEW_LEN)
+                        .collect();
+                    if p.len() < agent.response_preview.len() {
+                        format!("{}...", p)
+                    } else {
+                        p
+                    }
                 };
                 for chunk in word_wrap(&text, wrap_width) {
                     lines.push(Line::from(vec![
@@ -523,34 +788,112 @@ fn render_detail(frame: &mut Frame, turns: &[TurnUsage], selected: usize, app: &
                 lines.push(Line::from(""));
             }
 
-            lines.push(Line::from(Span::styled(format!("    {}", "─".repeat(wrap_width.min(40))), theme::dim_style())));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", "─".repeat(wrap_width.min(40))),
+                theme::dim_style(),
+            )));
             lines.push(Line::from(""));
         }
     }
 
     let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
-    let scroll = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0).min(max_scroll);
+    let scroll = app
+        .pane_scrolls
+        .get(&usize::MAX)
+        .copied()
+        .unwrap_or(0)
+        .min(max_scroll);
     let para = Paragraph::new(Text::from(lines)).scroll((scroll, 0));
     frame.render_widget(para, inner);
     max_scroll
 }
 
+fn cost_label(turn: &TurnUsage) -> String {
+    if turn.cost_known || turn.cost > 0.0 {
+        format_cost(turn.cost)
+    } else {
+        "unknown".to_string()
+    }
+}
+
 fn word_wrap(text: &str, width: usize) -> Vec<String> {
-    if width == 0 { return vec![text.to_string()]; }
+    if width == 0 {
+        return vec![text.to_string()];
+    }
     let mut result = Vec::new();
     for line in text.lines() {
-        if line.len() <= width {
+        if line.width() <= width {
             result.push(line.to_string());
         } else {
             let mut remaining = line;
-            while remaining.len() > width {
-                let break_at = remaining[..width].rfind(' ').unwrap_or(width);
+            while remaining.width() > width {
+                let limit = byte_index_for_display_width(remaining, width);
+                if limit == 0 {
+                    let first_char_end = remaining
+                        .char_indices()
+                        .nth(1)
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(remaining.len());
+                    let (chunk, rest) = remaining.split_at(first_char_end);
+                    result.push(chunk.to_string());
+                    remaining = rest.trim_start();
+                    continue;
+                }
+
+                let break_at = remaining[..limit]
+                    .rfind(' ')
+                    .filter(|idx| *idx > 0)
+                    .unwrap_or(limit);
                 let (chunk, rest) = remaining.split_at(break_at);
-                result.push(chunk.to_string());
+                if !chunk.is_empty() {
+                    result.push(chunk.trim_end().to_string());
+                }
                 remaining = rest.trim_start();
             }
-            if !remaining.is_empty() { result.push(remaining.to_string()); }
+            if !remaining.is_empty() {
+                result.push(remaining.to_string());
+            }
         }
     }
     result
+}
+
+fn byte_index_for_display_width(text: &str, max_width: usize) -> usize {
+    let mut display_width = 0;
+    let mut end = 0;
+    for (idx, ch) in text.char_indices() {
+        let char_width = ch.width().unwrap_or(0);
+        if display_width + char_width > max_width {
+            return end;
+        }
+        display_width += char_width;
+        end = idx + ch.len_utf8();
+    }
+    text.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_wrap_handles_curly_quotes_at_boundary() {
+        let wrapped = word_wrap(
+            "Codex turns have unknown cost, and the graph treats all-zero cost as “nothing to draw”.",
+            58,
+        );
+
+        assert!(wrapped.len() > 1);
+        assert!(wrapped.iter().all(|line| line.width() <= 58));
+        assert!(wrapped.iter().any(|line| line.contains("“nothing")));
+    }
+
+    #[test]
+    fn word_wrap_splits_long_unicode_words_on_char_boundaries() {
+        let wrapped = word_wrap("prefix “abcdefghijklmnopqrstuvwxyz” suffix", 10);
+
+        assert!(wrapped.len() > 1);
+        assert!(wrapped.iter().all(|line| line.width() <= 10));
+        assert!(wrapped.iter().any(|line| line.contains('”')));
+    }
 }

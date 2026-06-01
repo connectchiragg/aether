@@ -1,9 +1,16 @@
 pub mod event;
 
-use crate::model::{Agent, AgentStatus, Message, MessageType, UsageStats, TurnUsage, TurnMetrics, AgentCost, compute_cost};
+use crate::model::{
+    compute_provider_cost, Agent, AgentCost, AgentStatus, Message, MessageType, TurnMetrics,
+    TurnUsage, UsageStats,
+};
+use crate::provider::{
+    claude_projects_dir, claude_threads_dir, codex_sessions_dir, AetherConfig, ProviderKind,
+    ProviderStatus,
+};
 use crate::theme;
 use event::LiveEvent;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -20,6 +27,8 @@ pub struct SessionState {
     pub turns: Vec<TurnMarker>,
     pub file_path: PathBuf,
     pub usage: UsageStats,
+    pub provider: ProviderKind,
+    pub source: String,
     file_pos: u64,
     next_message_id: usize,
     color_idx: usize,
@@ -33,9 +42,13 @@ pub struct SessionState {
     /// Running total of input context
     cumulative_context: u64,
     /// Set of already-scanned sub-agent meta file paths
-    scanned_subagent_files: std::collections::HashSet<PathBuf>,
+    scanned_subagent_files: HashSet<PathBuf>,
     /// Maps agent IDs to canonical agent IDs (for grouping same-type agents)
     id_aliases: HashMap<String, String>,
+    current_codex_turn_id: Option<String>,
+    current_codex_model: Option<String>,
+    seen_codex_user_messages: HashSet<String>,
+    last_codex_response: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -47,7 +60,7 @@ pub struct TurnMarker {
 }
 
 impl SessionState {
-    fn new(file_path: PathBuf) -> Self {
+    fn new(file_path: PathBuf, provider: ProviderKind) -> Self {
         let session_id = file_path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -63,6 +76,8 @@ impl SessionState {
             turns: Vec::new(),
             file_path,
             usage: UsageStats::default(),
+            provider,
+            source: provider.source_label().to_string(),
             file_pos: 0,
             next_message_id: 0,
             color_idx: 0,
@@ -72,8 +87,12 @@ impl SessionState {
             native_name_resolved: false,
             current_turn_prompt: String::new(),
             cumulative_context: 0,
-            scanned_subagent_files: std::collections::HashSet::new(),
+            scanned_subagent_files: HashSet::new(),
             id_aliases: HashMap::new(),
+            current_codex_turn_id: None,
+            current_codex_model: None,
+            seen_codex_user_messages: HashSet::new(),
+            last_codex_response: None,
         }
     }
 
@@ -84,11 +103,18 @@ impl SessionState {
         self.next_message_id = 0;
         self.color_idx = 0;
         self.id_aliases.clear();
+        self.current_codex_turn_id = None;
+        self.current_codex_model = None;
+        self.seen_codex_user_messages.clear();
+        self.last_codex_response = None;
     }
 
     /// Resolve an agent ID through aliases (same agent type → same column)
     fn resolve_id(&self, id: &str) -> String {
-        self.id_aliases.get(id).cloned().unwrap_or_else(|| id.to_string())
+        self.id_aliases
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.to_string())
     }
 
     fn poll_file(&mut self) {
@@ -155,6 +181,13 @@ impl SessionState {
     }
 
     fn process_line(&mut self, line: &str) {
+        match self.provider {
+            ProviderKind::Claude => self.process_claude_line(line),
+            ProviderKind::Codex => self.process_codex_line(line),
+        }
+    }
+
+    fn process_claude_line(&mut self, line: &str) {
         // Try our hook event format first
         let event: LiveEvent = match serde_json::from_str(line) {
             Ok(e) => e,
@@ -166,7 +199,9 @@ impl SessionState {
         };
 
         match event {
-            LiveEvent::SessionStart { session_id, name, .. } => {
+            LiveEvent::SessionStart {
+                session_id, name, ..
+            } => {
                 // A new session_start in the same file means the old session was cleared
                 if self.session_id != session_id && !self.messages.is_empty() {
                     self.clear_display();
@@ -179,7 +214,9 @@ impl SessionState {
                     }
                 }
             }
-            LiveEvent::TurnStart { turn_index, prompt, .. } => {
+            LiveEvent::TurnStart {
+                turn_index, prompt, ..
+            } => {
                 let marker = TurnMarker {
                     turn_index,
                     prompt: prompt.unwrap_or_default(),
@@ -211,7 +248,9 @@ impl SessionState {
                 let agent = Agent::new(&id, &name, &role, color, vec![]);
                 self.agents.push(agent);
             }
-            LiveEvent::Message { from, to, content, .. } => {
+            LiveEvent::Message {
+                from, to, content, ..
+            } => {
                 let resolved_from = self.resolve_id(&from);
                 let resolved_to = self.resolve_id(&to);
                 self.ensure_agent(&resolved_from, "Parent");
@@ -219,7 +258,13 @@ impl SessionState {
 
                 let id = self.next_message_id;
                 self.next_message_id += 1;
-                let mut msg = Message::new(id, &resolved_from, &resolved_to, &content, MessageType::Response);
+                let mut msg = Message::new(
+                    id,
+                    &resolved_from,
+                    &resolved_to,
+                    &content,
+                    MessageType::Response,
+                );
                 msg.revealed_chars = msg.content.len();
                 self.messages.push(msg);
             }
@@ -286,7 +331,8 @@ impl SessionState {
                     return;
                 }
 
-                if let Some(content) = v.get("message")
+                if let Some(content) = v
+                    .get("message")
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_str())
                 {
@@ -300,7 +346,8 @@ impl SessionState {
                     }
 
                     if !dominated_name_native {
-                        let preview: String = content.chars()
+                        let preview: String = content
+                            .chars()
                             .filter(|c| !c.is_control())
                             .take(40)
                             .collect();
@@ -312,10 +359,9 @@ impl SessionState {
                         }
                     }
                     // Start a new turn
-                    let prompt: String = content.chars()
-                        .filter(|c| !c.is_control())
-                        .collect();
-                    let timestamp = v.get("timestamp")
+                    let prompt: String = content.chars().filter(|c| !c.is_control()).collect();
+                    let timestamp = v
+                        .get("timestamp")
                         .and_then(|t| t.as_str())
                         .unwrap_or("")
                         .to_string();
@@ -334,26 +380,40 @@ impl SessionState {
                         context_saved: 0,
                         metrics: None,
                         response_text: String::new(),
+                        cost_known: false,
                     });
                 }
             }
             "assistant" => {
                 // Accumulate usage from assistant messages
                 if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
-                    let input = usage.get("input_tokens")
-                        .and_then(|v| v.as_u64()).unwrap_or(0);
-                    let output = usage.get("output_tokens")
-                        .and_then(|v| v.as_u64()).unwrap_or(0);
-                    let cache_write = usage.get("cache_creation_input_tokens")
-                        .and_then(|v| v.as_u64()).unwrap_or(0);
-                    let cache_read = usage.get("cache_read_input_tokens")
-                        .and_then(|v| v.as_u64()).unwrap_or(0);
+                    let input = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let cache_write = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let cache_read = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
 
-                    let model = v.get("model")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("sonnet");
+                    let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("sonnet");
 
-                    let cost = compute_cost(model, input, output, cache_write, cache_read);
+                    let cost = compute_provider_cost(
+                        self.provider,
+                        model,
+                        input,
+                        output,
+                        cache_write,
+                        cache_read,
+                    );
                     self.cumulative_context += input + cache_read + cache_write;
 
                     // Add to current turn (last one)
@@ -362,7 +422,10 @@ impl SessionState {
                         turn.output_tokens += output;
                         turn.cache_read_tokens += cache_read;
                         turn.cache_write_tokens += cache_write;
-                        turn.cost += cost;
+                        if let Some(cost) = cost {
+                            turn.cost += cost;
+                            turn.cost_known = true;
+                        }
                         turn.cumulative_context = self.cumulative_context;
                     }
                 }
@@ -377,7 +440,8 @@ impl SessionState {
                                             turn.response_text.push('\n');
                                         }
                                         // Keep first 2000 chars per turn for analysis
-                                        let remaining = 2000usize.saturating_sub(turn.response_text.len());
+                                        let remaining =
+                                            2000usize.saturating_sub(turn.response_text.len());
                                         if remaining > 0 {
                                             turn.response_text.extend(text.chars().take(remaining));
                                         }
@@ -393,14 +457,28 @@ impl SessionState {
                 // Match to the last turn that doesn't have metrics yet.
                 let metrics = TurnMetrics {
                     friction: v.get("friction").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
-                    hallucination: v.get("hallucination").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
+                    hallucination: v
+                        .get("hallucination")
+                        .and_then(|x| x.as_f64())
+                        .unwrap_or(0.0) as f32,
                     confidence: v.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
                     acceptance: v.get("acceptance").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
-                    performance: v.get("performance").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32,
-                    recap: v.get("recap").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    performance: v.get("performance").and_then(|x| x.as_f64()).unwrap_or(0.0)
+                        as f32,
+                    recap: v
+                        .get("recap")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 };
                 // Find last turn without metrics (the one this score belongs to)
-                if let Some(turn) = self.usage.turns.iter_mut().rev().find(|t| t.metrics.is_none()) {
+                if let Some(turn) = self
+                    .usage
+                    .turns
+                    .iter_mut()
+                    .rev()
+                    .find(|t| t.metrics.is_none())
+                {
                     turn.metrics = Some(metrics);
                 }
             }
@@ -408,15 +486,337 @@ impl SessionState {
         }
     }
 
+    /// Extract a useful observability stream from Codex rollout JSONL.
+    fn process_codex_line(&mut self, line: &str) {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let line_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let timestamp = v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        match line_type {
+            "session_meta" => {
+                if let Some(payload) = v.get("payload") {
+                    if let Some(id) = payload.get("id").and_then(|id| id.as_str()) {
+                        self.session_id = id.to_string();
+                    }
+                    if self.name_override.is_none() {
+                        if let Some(cwd) = payload.get("cwd").and_then(|cwd| cwd.as_str()) {
+                            self.name = PathBuf::from(cwd)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("Codex session")
+                                .to_string();
+                            self.native_name_resolved = true;
+                        }
+                    }
+                }
+            }
+            "turn_context" => {
+                let payload = v.get("payload").unwrap_or(&v);
+                if let Some(model) = payload
+                    .get("model")
+                    .or_else(|| v.get("model"))
+                    .and_then(|model| model.as_str())
+                {
+                    self.current_codex_model = Some(model.to_string());
+                }
+                if self.name_override.is_none() && !self.native_name_resolved {
+                    if let Some(cwd) = payload
+                        .get("cwd")
+                        .or_else(|| v.get("cwd"))
+                        .and_then(|cwd| cwd.as_str())
+                    {
+                        self.name = PathBuf::from(cwd)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("Codex session")
+                            .to_string();
+                    }
+                }
+            }
+            "response_item" => self.process_codex_response_item(v.get("payload"), &timestamp),
+            "event_msg" => self.process_codex_event_msg(v.get("payload"), &timestamp),
+            _ => {}
+        }
+    }
+
+    fn process_codex_response_item(
+        &mut self,
+        payload: Option<&serde_json::Value>,
+        timestamp: &str,
+    ) {
+        let Some(payload) = payload else {
+            return;
+        };
+        match payload.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "message" => {
+                let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                let text = content_text(payload.get("content"));
+                if text.trim().is_empty() {
+                    return;
+                }
+                match role {
+                    "user" => {
+                        if self.usage.turns.is_empty()
+                            && !is_synthetic_codex_user_message(&text)
+                            && !self.seen_codex_user_messages.contains(&text)
+                        {
+                            self.start_codex_turn(text, timestamp.to_string(), None)
+                        }
+                    }
+                    "assistant" => self.push_codex_response(text),
+                    _ => {}
+                }
+            }
+            "function_call" | "custom_tool_call" | "web_search_call" => {
+                let name = payload
+                    .get("name")
+                    .or_else(|| payload.get("status"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("tool call");
+                self.push_observed_message(
+                    "tool".to_string(),
+                    "codex".to_string(),
+                    format!(
+                        "{} ({})",
+                        name,
+                        payload
+                            .get("type")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("tool")
+                    ),
+                );
+            }
+            "function_call_output" | "custom_tool_call_output" => {
+                if let Some(output) = payload.get("output").and_then(value_preview) {
+                    self.push_observed_message("tool".to_string(), "codex".to_string(), output);
+                }
+            }
+            "reasoning" => {
+                if let Some(text) = content_text_opt(payload.get("summary"))
+                    .or_else(|| content_text_opt(payload.get("content")))
+                {
+                    if !text.trim().is_empty() {
+                        self.push_observed_message(
+                            "reasoning".to_string(),
+                            "codex".to_string(),
+                            text,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn process_codex_event_msg(&mut self, payload: Option<&serde_json::Value>, timestamp: &str) {
+        let Some(payload) = payload else {
+            return;
+        };
+        match payload.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+            "task_started" => {
+                self.current_codex_turn_id = payload
+                    .get("turn_id")
+                    .and_then(|id| id.as_str())
+                    .map(|id| id.to_string());
+            }
+            "user_message" => {
+                if let Some(message) = payload.get("message").and_then(|m| m.as_str()) {
+                    if !is_synthetic_codex_user_message(message)
+                        && !self.seen_codex_user_messages.contains(message)
+                    {
+                        self.start_codex_turn(
+                            message.to_string(),
+                            timestamp.to_string(),
+                            self.current_codex_turn_id.clone(),
+                        );
+                    }
+                }
+            }
+            "agent_message" => {
+                if let Some(message) = payload.get("message").and_then(|m| m.as_str()) {
+                    if !self.is_duplicate_codex_response(message) {
+                        self.push_codex_response(message.to_string());
+                    }
+                }
+            }
+            "token_count" => self.apply_codex_usage(payload),
+            "task_complete" => {
+                if let Some(message) = payload.get("last_agent_message").and_then(|m| m.as_str()) {
+                    if self
+                        .usage
+                        .turns
+                        .last()
+                        .map(|t| t.response_text.is_empty())
+                        .unwrap_or(false)
+                    {
+                        self.push_codex_response(message.to_string());
+                    }
+                }
+            }
+            "patch_apply_end" | "web_search_end" | "item_completed" => {
+                let label = payload
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("event");
+                let status = payload
+                    .get("status")
+                    .or_else(|| payload.get("action"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("done");
+                self.push_observed_message(
+                    "tool".to_string(),
+                    "codex".to_string(),
+                    format!("{label} ({status})"),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn start_codex_turn(&mut self, prompt: String, timestamp: String, turn_id: Option<String>) {
+        if self.usage.turns.last().map(|t| t.prompt.as_str()) == Some(prompt.as_str()) {
+            return;
+        }
+        self.seen_codex_user_messages.insert(prompt.clone());
+        self.current_codex_turn_id = turn_id;
+        self.last_codex_response = None;
+        if self.name_override.is_none() && !self.native_name_resolved {
+            let preview: String = prompt
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(40)
+                .collect();
+            if !preview.is_empty() {
+                self.name = preview;
+                self.native_name_resolved = true;
+            }
+        }
+
+        self.current_turn_prompt = prompt.clone();
+        self.turns.push(TurnMarker {
+            turn_index: self.usage.turns.len() + 1,
+            prompt: prompt.clone(),
+            message_start_idx: self.messages.len(),
+        });
+        self.usage.turns.push(TurnUsage {
+            prompt: prompt.clone(),
+            timestamp,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost: 0.0,
+            agents: Vec::new(),
+            cumulative_context: self.cumulative_context,
+            context_saved: 0,
+            metrics: None,
+            response_text: String::new(),
+            cost_known: false,
+        });
+        self.push_observed_message("user".to_string(), "codex".to_string(), prompt);
+    }
+
+    fn push_codex_response(&mut self, text: String) {
+        if text.trim().is_empty() {
+            return;
+        }
+        if self.is_duplicate_codex_response(&text) {
+            return;
+        }
+        if let Some(turn) = self.usage.turns.last_mut() {
+            if !turn.response_text.is_empty() {
+                turn.response_text.push('\n');
+            }
+            turn.response_text.push_str(&text);
+        }
+        self.last_codex_response = Some(text.clone());
+        self.push_observed_message("codex".to_string(), "user".to_string(), text);
+    }
+
+    fn is_duplicate_codex_response(&self, text: &str) -> bool {
+        self.last_codex_response.as_deref() == Some(text)
+            || self
+                .usage
+                .turns
+                .last()
+                .map(|turn| turn.response_text.ends_with(text))
+                .unwrap_or(false)
+    }
+
+    fn apply_codex_usage(&mut self, payload: &serde_json::Value) {
+        let usage = payload
+            .get("info")
+            .and_then(|i| i.get("last_token_usage"))
+            .or_else(|| payload.get("info").and_then(|i| i.get("total_token_usage")));
+        let Some(usage) = usage else {
+            return;
+        };
+
+        let input = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cached = usage
+            .get("cached_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let total = usage
+            .get("total_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        let has_priced_token_split = input > 0 || output > 0 || cached > 0;
+        let cost = if has_priced_token_split {
+            self.current_codex_model.as_deref().and_then(|model| {
+                compute_provider_cost(self.provider, model, input, output, 0, cached)
+            })
+        } else {
+            None
+        };
+
+        if let Some(turn) = self.usage.turns.last_mut() {
+            if input == 0 && output == 0 && cached == 0 && total > 0 {
+                turn.output_tokens += total;
+                self.cumulative_context += total;
+            } else {
+                turn.input_tokens += input;
+                turn.output_tokens += output;
+                turn.cache_read_tokens += cached;
+                self.cumulative_context += input + cached;
+            }
+            turn.cumulative_context = self.cumulative_context;
+            if let Some(cost) = cost {
+                turn.cost += cost;
+                turn.cost_known = true;
+            }
+        }
+    }
+
     /// Scan sub-agent files in <session-id>/subagents/ and correlate to turns.
     /// Incremental: only processes newly appeared agent files.
     fn scan_subagents(&mut self) {
         // Sub-agent dir is next to the session file: <session-id>/subagents/
-        let session_stem = self.file_path.file_stem()
+        let session_stem = self
+            .file_path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-        let subagents_dir = self.file_path.parent()
+        let subagents_dir = self
+            .file_path
+            .parent()
             .map(|p| p.join(&session_stem).join("subagents"))
             .unwrap_or_default();
 
@@ -458,11 +858,13 @@ impl SessionState {
                 Err(_) => continue,
             };
 
-            let agent_type = meta.get("agentType")
+            let agent_type = meta
+                .get("agentType")
                 .and_then(|v| v.as_str())
                 .unwrap_or("agent")
                 .to_string();
-            let description = meta.get("description")
+            let description = meta
+                .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -512,17 +914,31 @@ impl SessionState {
                             model = m.to_string();
                         }
                         if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
-                            input_tokens += usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            output_tokens += usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            cache_read += usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            cache_write += usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            input_tokens += usage
+                                .get("input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            output_tokens += usage
+                                .get("output_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            cache_read += usage
+                                .get("cache_read_input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            cache_write += usage
+                                .get("cache_creation_input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
                         }
                         // Extract text from assistant response
                         if let Some(content) = v.get("message").and_then(|m| m.get("content")) {
                             if let Some(arr) = content.as_array() {
                                 for block in arr {
                                     if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                        if let Some(text) =
+                                            block.get("text").and_then(|t| t.as_str())
+                                        {
                                             if !text.is_empty() {
                                                 response_parts.push(text.to_string());
                                             }
@@ -543,14 +959,28 @@ impl SessionState {
             // Mark as scanned now that we have data
             self.scanned_subagent_files.insert(path.clone());
 
-            let cost = compute_cost(&model, input_tokens, output_tokens, cache_write, cache_read);
+            let cost = compute_provider_cost(
+                self.provider,
+                &model,
+                input_tokens,
+                output_tokens,
+                cache_write,
+                cache_read,
+            )
+            .unwrap_or(0.0);
             let agent_cost = AgentCost {
-                name: if description.is_empty() { agent_type } else {
-                    format!("{}: {}", agent_type, if description.len() > 30 {
-                        format!("{}...", &description[..27])
-                    } else {
-                        description
-                    })
+                name: if description.is_empty() {
+                    agent_type
+                } else {
+                    format!(
+                        "{}: {}",
+                        agent_type,
+                        if description.len() > 30 {
+                            format!("{}...", &description[..27])
+                        } else {
+                            description
+                        }
+                    )
                 },
                 cost,
                 input_tokens,
@@ -574,7 +1004,6 @@ impl SessionState {
                 }
             }
         }
-
     }
 
     fn ensure_agent(&mut self, id: &str, default_role: &str) {
@@ -591,40 +1020,65 @@ impl SessionState {
         let agent = Agent::new(id, &display_name, default_role, color, vec![]);
         self.agents.push(agent);
     }
+
+    fn push_observed_message(&mut self, from: String, to: String, content: String) {
+        self.ensure_agent(&from, "Observed");
+        self.ensure_agent(&to, "Observed");
+        let id = self.next_message_id;
+        self.next_message_id += 1;
+        let mut message = Message::new(id, &from, &to, &content, MessageType::Response);
+        message.revealed_chars = message.content.len();
+        self.messages.push(message);
+    }
 }
 
 /// Maximum number of sessions to track (most recent by mtime).
 const MAX_SESSIONS: usize = 50;
 
-/// Manages multiple sessions, scanning Claude Code project directories.
+/// Manages multiple provider session files.
 pub struct LiveEngine {
     pub sessions: Vec<SessionState>,
     pub active_idx: usize,
-    threads_dir: PathBuf,
+    pub active_provider: Option<ProviderKind>,
+    pub provider_cursor: usize,
+    dir_override: Option<PathBuf>,
     scan_cooldown: u32,
     /// Persisted name overrides: file stem → custom name
     name_overrides: HashMap<String, String>,
+    config: AetherConfig,
 }
 
-
 impl LiveEngine {
-    pub fn new(threads_dir: PathBuf) -> Self {
-        let name_overrides = Self::load_name_overrides(&threads_dir);
+    pub fn new(provider: Option<ProviderKind>, dir_override: Option<PathBuf>) -> Self {
+        let config = AetherConfig::load();
+        let name_overrides = Self::load_name_overrides();
         Self {
             sessions: Vec::new(),
             active_idx: 0,
-            threads_dir,
+            active_provider: provider,
+            provider_cursor: provider
+                .and_then(|p| {
+                    ProviderKind::ALL
+                        .iter()
+                        .position(|candidate| *candidate == p)
+                })
+                .unwrap_or(0),
+            dir_override,
             scan_cooldown: 0,
             name_overrides,
+            config,
         }
     }
 
-    fn overrides_path(threads_dir: &PathBuf) -> PathBuf {
-        threads_dir.join(".session-names.json")
+    fn overrides_path() -> PathBuf {
+        crate::provider::config_path()
+            .parent()
+            .map(|p| p.join("session-names.json"))
+            .unwrap_or_else(|| PathBuf::from(".session-names.json"))
     }
 
-    fn load_name_overrides(threads_dir: &PathBuf) -> HashMap<String, String> {
-        let path = Self::overrides_path(threads_dir);
+    fn load_name_overrides() -> HashMap<String, String> {
+        let path = Self::overrides_path();
         match fs::read_to_string(&path) {
             Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
             Err(_) => HashMap::new(),
@@ -632,29 +1086,32 @@ impl LiveEngine {
     }
 
     fn save_name_overrides(&self) {
-        let path = Self::overrides_path(&self.threads_dir);
+        let path = Self::overrides_path();
         if let Ok(data) = serde_json::to_string_pretty(&self.name_overrides) {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
             let _ = fs::write(path, data);
         }
     }
 
     pub fn rename_session(&mut self, session_idx: usize, new_name: String) {
         if let Some(session) = self.sessions.get_mut(session_idx) {
-            let file_stem = session.file_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
+            let key = Self::session_override_key(session.provider, &session.file_path);
 
             session.name = new_name.clone();
             session.name_override = Some(new_name);
 
             // Persist
-            self.name_overrides.insert(file_stem, session.name.clone());
+            self.name_overrides.insert(key, session.name.clone());
             self.save_name_overrides();
         }
     }
 
+    fn session_override_key(provider: ProviderKind, path: &std::path::Path) -> String {
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        format!("{}:{}", provider.id(), stem)
+    }
 
     pub fn tick(&mut self, session_locked: bool) -> bool {
         // Scan for new session files every ~2 seconds (40 ticks at 50ms)
@@ -672,10 +1129,12 @@ impl LiveEngine {
 
         // Auto-switch to most recently modified session (only when not locked)
         if !session_locked && self.sessions.len() > 1 {
+            let provider = self.active_provider;
             let most_recent = self
                 .sessions
                 .iter()
                 .enumerate()
+                .filter(|(_, s)| provider.map(|p| s.provider == p).unwrap_or(true))
                 .max_by_key(|(_, s)| s.last_modified);
             if let Some((idx, _)) = most_recent {
                 if idx != self.active_idx && self.sessions[idx].last_modified > 0 {
@@ -687,7 +1146,6 @@ impl LiveEngine {
         false
     }
 
-
     pub fn reset(&mut self) {
         if let Some(session) = self.sessions.get_mut(self.active_idx) {
             session.clear_display();
@@ -697,31 +1155,44 @@ impl LiveEngine {
     }
 
     fn scan_sessions(&mut self) {
-        // Scan the threads dir (hook-generated files)
-        self.scan_directory(&self.threads_dir.clone());
+        let providers: Vec<ProviderKind> = if let Some(provider) = self.active_provider {
+            vec![provider]
+        } else {
+            ProviderKind::ALL.to_vec()
+        };
 
-        // Also scan Claude Code's native project directories
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let projects_dir = PathBuf::from(&home).join(".claude").join("projects");
-        if projects_dir.exists() {
-            // Each subdirectory is a project
-            if let Ok(projects) = fs::read_dir(&projects_dir) {
-                for project in projects.flatten() {
-                    let project_path = project.path();
-                    if !project_path.is_dir() {
-                        continue;
+        for provider in providers {
+            if let Some(dir) = self.dir_override.clone() {
+                self.scan_directory(&dir, provider, provider == ProviderKind::Codex);
+                continue;
+            }
+
+            match provider {
+                ProviderKind::Claude => {
+                    self.scan_directory(&claude_threads_dir(), provider, false);
+                    let projects_dir = claude_projects_dir();
+                    if let Ok(projects) = fs::read_dir(&projects_dir) {
+                        for project in projects.flatten() {
+                            let project_path = project.path();
+                            if !project_path.is_dir() {
+                                continue;
+                            }
+                            let dir_name = project_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("");
+                            if dir_name.starts_with("-private-tmp")
+                                || dir_name.starts_with("-tmp")
+                                || dir_name.contains("worktrees-")
+                            {
+                                continue;
+                            }
+                            self.scan_directory(&project_path, provider, false);
+                        }
                     }
-                    // Skip ephemeral/temp project directories and worktrees
-                    let dir_name = project_path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    if dir_name.starts_with("-private-tmp")
-                        || dir_name.starts_with("-tmp")
-                        || dir_name.contains("worktrees-")
-                    {
-                        continue;
-                    }
-                    self.scan_directory(&project_path);
+                }
+                ProviderKind::Codex => {
+                    self.scan_directory(&codex_sessions_dir(), provider, true);
                 }
             }
         }
@@ -730,10 +1201,13 @@ impl LiveEngine {
         self.sessions.retain(|s| s.file_path.exists());
 
         // Sort by last_modified descending so most recent sessions appear first
-        self.sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+        self.sessions
+            .sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 
         // Cap to latest N sessions
-        let active_path = self.sessions.get(self.active_idx)
+        let active_path = self
+            .sessions
+            .get(self.active_idx)
             .map(|s| s.file_path.clone());
         self.sessions.truncate(MAX_SESSIONS);
 
@@ -749,7 +1223,7 @@ impl LiveEngine {
         }
     }
 
-    fn scan_directory(&mut self, dir: &PathBuf) {
+    fn scan_directory(&mut self, dir: &PathBuf, provider: ProviderKind, recursive: bool) {
         let entries = match fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
@@ -757,6 +1231,10 @@ impl LiveEngine {
 
         for entry in entries.flatten() {
             let path = entry.path();
+            if recursive && path.is_dir() {
+                self.scan_directory(&path, provider, true);
+                continue;
+            }
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
@@ -765,19 +1243,29 @@ impl LiveEngine {
                 continue;
             }
             // Skip files inside subagent directories
-            if path.parent().and_then(|p| p.file_name())
-                .and_then(|n| n.to_str()) == Some("subagents") {
+            if path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                == Some("subagents")
+            {
                 continue;
             }
 
             let already_tracked = self.sessions.iter().any(|s| s.file_path == path);
             if !already_tracked {
-                let mut session = SessionState::new(path.clone());
+                let mut session = SessionState::new(path.clone(), provider);
+                if let Ok(meta) = fs::metadata(&path) {
+                    if let Ok(modified) = meta.modified() {
+                        session.last_modified = modified
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                    }
+                }
                 // Apply persisted name override
-                let stem = path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                if let Some(custom_name) = self.name_overrides.get(stem) {
+                let key = Self::session_override_key(provider, &path);
+                if let Some(custom_name) = self.name_overrides.get(&key) {
                     session.name = custom_name.clone();
                     session.name_override = Some(custom_name.clone());
                 }
@@ -787,10 +1275,16 @@ impl LiveEngine {
     }
 
     pub fn next_session(&mut self) {
-        let len = self.sessions.len();
-        if len == 0 { return; }
-        for i in 1..=len {
-            let idx = (self.active_idx + i) % len;
+        let indices = self.active_session_indices();
+        if indices.is_empty() {
+            return;
+        }
+        let pos = indices
+            .iter()
+            .position(|idx| *idx == self.active_idx)
+            .unwrap_or(0);
+        for offset in 1..=indices.len() {
+            let idx = indices[(pos + offset) % indices.len()];
             let s = &self.sessions[idx];
             if !s.agents.is_empty() || !s.messages.is_empty() {
                 self.active_idx = idx;
@@ -800,10 +1294,16 @@ impl LiveEngine {
     }
 
     pub fn prev_session(&mut self) {
-        let len = self.sessions.len();
-        if len == 0 { return; }
-        for i in 1..=len {
-            let idx = (self.active_idx + len - i) % len;
+        let indices = self.active_session_indices();
+        if indices.is_empty() {
+            return;
+        }
+        let pos = indices
+            .iter()
+            .position(|idx| *idx == self.active_idx)
+            .unwrap_or(0);
+        for offset in 1..=indices.len() {
+            let idx = indices[(pos + indices.len() - offset) % indices.len()];
             let s = &self.sessions[idx];
             if !s.agents.is_empty() || !s.messages.is_empty() {
                 self.active_idx = idx;
@@ -814,11 +1314,15 @@ impl LiveEngine {
 
     // Convenience accessors for the active session
     pub fn agents(&self) -> &[Agent] {
-        self.active_session().map(|s| s.agents.as_slice()).unwrap_or(&[])
+        self.active_session()
+            .map(|s| s.agents.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn messages(&self) -> &[Message] {
-        self.active_session().map(|s| s.messages.as_slice()).unwrap_or(&[])
+        self.active_session()
+            .map(|s| s.messages.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn active_session(&self) -> Option<&SessionState> {
@@ -833,12 +1337,231 @@ impl LiveEngine {
         self.active_sessions().count()
     }
 
-    /// All sessions, already sorted by last_modified descending.
+    /// Sessions for the selected provider, already sorted by last_modified descending.
     pub fn active_sessions(&self) -> impl Iterator<Item = (usize, &SessionState)> {
-        self.sessions.iter().enumerate()
+        let provider = self.active_provider;
+        self.sessions
+            .iter()
+            .enumerate()
+            .filter(move |(_, session)| provider.map(|p| session.provider == p).unwrap_or(true))
     }
 
     pub fn active_session_name(&self) -> &str {
-        self.active_session().map(|s| s.name.as_str()).unwrap_or("none")
+        self.active_session()
+            .map(|s| s.name.as_str())
+            .unwrap_or("none")
+    }
+
+    pub fn provider_statuses(&self) -> Vec<ProviderStatus> {
+        ProviderKind::ALL
+            .iter()
+            .map(|provider| {
+                let session_count = self
+                    .sessions
+                    .iter()
+                    .filter(|session| session.provider == *provider)
+                    .count();
+                let last_modified = self
+                    .sessions
+                    .iter()
+                    .filter(|session| session.provider == *provider)
+                    .map(|session| session.last_modified)
+                    .max()
+                    .unwrap_or(0);
+                ProviderStatus {
+                    kind: *provider,
+                    enabled: self.config.is_enabled(*provider),
+                    available: self.provider_available(*provider),
+                    session_count,
+                    last_modified,
+                }
+            })
+            .collect()
+    }
+
+    pub fn select_provider(&mut self, provider: ProviderKind) {
+        self.active_provider = Some(provider);
+        self.provider_cursor = ProviderKind::ALL
+            .iter()
+            .position(|candidate| *candidate == provider)
+            .unwrap_or(0);
+        let first_idx = self.active_session_indices().first().copied();
+        if let Some(idx) = first_idx {
+            self.active_idx = idx;
+        }
+    }
+
+    pub fn clear_provider(&mut self) {
+        self.active_provider = None;
+    }
+
+    fn active_session_indices(&self) -> Vec<usize> {
+        self.active_sessions().map(|(idx, _)| idx).collect()
+    }
+
+    fn provider_available(&self, provider: ProviderKind) -> bool {
+        match provider {
+            ProviderKind::Claude => claude_threads_dir().exists() || claude_projects_dir().exists(),
+            ProviderKind::Codex => codex_sessions_dir().exists(),
+        }
+    }
+}
+
+fn content_text(value: Option<&serde_json::Value>) -> String {
+    content_text_opt(value).unwrap_or_default()
+}
+
+fn content_text_opt(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
+        return Some(text.to_string());
+    }
+    if let Some(arr) = value.as_array() {
+        let parts: Vec<String> = arr
+            .iter()
+            .filter_map(|item| {
+                item.get("text")
+                    .and_then(|text| text.as_str())
+                    .or_else(|| item.get("content").and_then(|text| text.as_str()))
+                    .map(|text| text.to_string())
+            })
+            .collect();
+        if !parts.is_empty() {
+            return Some(parts.join("\n"));
+        }
+    }
+    None
+}
+
+fn value_preview(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    if value.is_null() {
+        return None;
+    }
+    let text = value.to_string();
+    Some(text.chars().take(500).collect())
+}
+
+fn is_synthetic_codex_user_message(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with('<')
+        || trimmed.starts_with("Tool: ")
+        || trimmed.starts_with("Working Directory:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_rollout_lines_create_turn_response_and_usage() {
+        let mut session = SessionState::new(
+            PathBuf::from("rollout-2026-05-31T00-00-00-test.jsonl"),
+            ProviderKind::Codex,
+        );
+
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:00Z","type":"session_meta","payload":{"id":"codex-session","cwd":"/tmp/project","model_provider":"openai"}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"write a test"}]}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":5,"total_tokens":17}}}}"#,
+        );
+
+        assert_eq!(session.session_id, "codex-session");
+        assert_eq!(session.name, "project");
+        assert_eq!(session.usage.turn_count(), 1);
+        assert_eq!(session.usage.turns[0].prompt, "write a test");
+        assert_eq!(session.usage.turns[0].response_text, "done");
+        assert_eq!(session.usage.turns[0].input_tokens, 10);
+        assert_eq!(session.usage.turns[0].cache_read_tokens, 2);
+        assert_eq!(session.usage.turns[0].output_tokens, 5);
+        assert!(!session.usage.turns[0].cost_known);
+    }
+
+    #[test]
+    fn codex_usage_is_priced_when_model_is_known() {
+        let mut session =
+            SessionState::new(PathBuf::from("rollout-test.jsonl"), ProviderKind::Codex);
+
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:00Z","type":"turn_context","payload":{"cwd":"/tmp/project","model":"gpt-5.5"}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"price this turn"}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"total_tokens":1100}}}}"#,
+        );
+
+        let turn = &session.usage.turns[0];
+        let expected = (800.0 * 5.0 + 200.0 * 0.50 + 100.0 * 30.0) / 1_000_000.0;
+        assert!(turn.cost_known);
+        assert!((turn.cost - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn codex_unknown_lines_are_ignored() {
+        let mut session =
+            SessionState::new(PathBuf::from("rollout-test.jsonl"), ProviderKind::Codex);
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:00Z","type":"unknown","payload":{"x":1}}"#,
+        );
+        assert_eq!(session.usage.turn_count(), 0);
+        assert!(session.messages.is_empty());
+    }
+
+    #[test]
+    fn codex_ignores_synthetic_user_records_and_uses_event_messages_for_turns() {
+        let mut session =
+            SessionState::new(PathBuf::from("rollout-test.jsonl"), ProviderKind::Codex);
+
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/tmp/project</cwd>\n</environment_context>"}]}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first real prompt"}]}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"first real prompt"}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:03Z","type":"event_msg","payload":{"type":"agent_message","message":"first answer"}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:04Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:05Z","type":"event_msg","payload":{"type":"user_message","message":"second prompt"}}"#,
+        );
+
+        assert_eq!(session.usage.turn_count(), 2);
+        assert_eq!(session.usage.turns[0].prompt, "first real prompt");
+        assert_eq!(session.usage.turns[0].response_text, "first answer");
+        assert_eq!(session.usage.turns[1].prompt, "second prompt");
+        assert_eq!(
+            session
+                .messages
+                .iter()
+                .filter(|m| m.from == "codex")
+                .count(),
+            1
+        );
     }
 }

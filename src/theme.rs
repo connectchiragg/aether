@@ -17,22 +17,46 @@ pub fn is_truecolor() -> bool {
 // Each color has a truecolor and a basic 16-color fallback
 
 pub fn primary() -> Color {
-    if is_truecolor() { Color::Rgb(220, 60, 60) } else { Color::Red }
+    if is_truecolor() {
+        Color::Rgb(220, 60, 60)
+    } else {
+        Color::Red
+    }
 }
 pub fn accent() -> Color {
-    if is_truecolor() { Color::Rgb(255, 90, 70) } else { Color::LightRed }
+    if is_truecolor() {
+        Color::Rgb(255, 90, 70)
+    } else {
+        Color::LightRed
+    }
 }
 pub fn dim() -> Color {
-    if is_truecolor() { Color::Rgb(80, 70, 75) } else { Color::DarkGray }
+    if is_truecolor() {
+        Color::Rgb(80, 70, 75)
+    } else {
+        Color::DarkGray
+    }
 }
 pub fn surface() -> Color {
-    if is_truecolor() { Color::Rgb(40, 36, 38) } else { Color::Black }
+    if is_truecolor() {
+        Color::Rgb(40, 36, 38)
+    } else {
+        Color::Black
+    }
 }
 pub fn subtle() -> Color {
-    if is_truecolor() { Color::Rgb(120, 100, 105) } else { Color::Gray }
+    if is_truecolor() {
+        Color::Rgb(120, 100, 105)
+    } else {
+        Color::Gray
+    }
 }
 pub fn warm() -> Color {
-    if is_truecolor() { Color::Rgb(255, 170, 80) } else { Color::Yellow }
+    if is_truecolor() {
+        Color::Rgb(255, 170, 80)
+    } else {
+        Color::Yellow
+    }
 }
 
 // Legacy constants — used by code that hasn't switched to functions yet
@@ -68,9 +92,7 @@ pub fn unfocused_border_style() -> Style {
 }
 
 pub fn header_title_style() -> Style {
-    Style::default()
-        .fg(accent())
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(accent()).add_modifier(Modifier::BOLD)
 }
 
 pub fn dim_style() -> Style {

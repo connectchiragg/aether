@@ -1,4 +1,5 @@
 /// Token usage and cost tracking per session.
+use crate::provider::ProviderKind;
 
 #[derive(Default, Clone)]
 pub struct UsageStats {
@@ -23,6 +24,8 @@ pub struct TurnUsage {
     pub metrics: Option<TurnMetrics>,
     /// Raw assistant response text (for Haiku analysis)
     pub response_text: String,
+    /// Whether Aether could map this provider/model token usage to a known price.
+    pub cost_known: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +61,10 @@ impl UsageStats {
         self.turns.iter().map(|t| t.cost).sum()
     }
 
+    pub fn cost_is_known(&self) -> bool {
+        self.turns.iter().any(|t| t.cost_known || t.cost > 0.0)
+    }
+
     pub fn total_input(&self) -> u64 {
         self.turns.iter().map(|t| t.input_tokens).sum()
     }
@@ -71,17 +78,193 @@ impl UsageStats {
     }
 }
 
-/// Calculate cost in USD for given token counts and model.
-pub fn compute_cost(model: &str, input: u64, output: u64, cache_write: u64, cache_read: u64) -> f64 {
-    let (in_rate, out_rate, cw_rate, cr_rate) = match model {
-        m if m.contains("opus") => (15.0, 75.0, 18.75, 1.875),
-        m if m.contains("sonnet") => (3.0, 15.0, 3.75, 0.375),
-        m if m.contains("haiku") => (0.80, 4.0, 1.0, 0.08),
-        _ => (3.0, 15.0, 3.75, 0.375), // default to sonnet pricing
+#[derive(Clone, Copy)]
+struct TokenRates {
+    input: f64,
+    output: f64,
+    cache_write: f64,
+    cache_read: f64,
+    cache_read_is_input_subset: bool,
+}
+
+impl TokenRates {
+    fn cost(self, input: u64, output: u64, cache_write: u64, cache_read: u64) -> f64 {
+        let billable_input = if self.cache_read_is_input_subset {
+            input.saturating_sub(cache_read)
+        } else {
+            input
+        };
+
+        (billable_input as f64 * self.input
+            + output as f64 * self.output
+            + cache_write as f64 * self.cache_write
+            + cache_read as f64 * self.cache_read)
+            / 1_000_000.0
+    }
+}
+
+/// Calculate USD cost for provider-specific token accounting.
+pub fn compute_provider_cost(
+    provider: ProviderKind,
+    model: &str,
+    input: u64,
+    output: u64,
+    cache_write: u64,
+    cache_read: u64,
+) -> Option<f64> {
+    let rates = match provider {
+        ProviderKind::Claude => claude_rates(model),
+        ProviderKind::Codex => openai_rates(model, input),
+    }?;
+    Some(rates.cost(input, output, cache_write, cache_read))
+}
+
+fn claude_rates(model: &str) -> Option<TokenRates> {
+    let normalized = model.to_ascii_lowercase();
+    let (input, output) = if normalized.contains("opus-4-8")
+        || normalized.contains("opus-4-7")
+        || normalized.contains("opus-4-6")
+        || normalized.contains("opus-4-5")
+    {
+        (5.0, 25.0)
+    } else if normalized.contains("opus") {
+        (15.0, 75.0)
+    } else if normalized.contains("sonnet") {
+        (3.0, 15.0)
+    } else if normalized.contains("haiku-4-5") {
+        (1.0, 5.0)
+    } else if normalized.contains("haiku") {
+        (0.80, 4.0)
+    } else {
+        return None;
     };
-    (input as f64 * in_rate + output as f64 * out_rate
-        + cache_write as f64 * cw_rate + cache_read as f64 * cr_rate)
-        / 1_000_000.0
+
+    Some(TokenRates {
+        input,
+        output,
+        cache_write: input * 1.25,
+        cache_read: input * 0.1,
+        cache_read_is_input_subset: false,
+    })
+}
+
+fn openai_rates(model: &str, input_tokens: u64) -> Option<TokenRates> {
+    let normalized = model.to_ascii_lowercase();
+    let mut rates = if normalized.contains("gpt-5.5") {
+        TokenRates {
+            input: 5.0,
+            cache_read: 0.50,
+            output: 30.0,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-5.4-mini") {
+        TokenRates {
+            input: 0.75,
+            cache_read: 0.075,
+            output: 4.50,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-5.4") {
+        TokenRates {
+            input: 2.50,
+            cache_read: 0.25,
+            output: 15.0,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-5.3-codex")
+        || normalized.contains("gpt-5.2-codex")
+        || normalized.contains("gpt-5.2")
+    {
+        TokenRates {
+            input: 1.75,
+            cache_read: 0.175,
+            output: 14.0,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-5.1")
+        || normalized.contains("gpt-5-codex")
+        || normalized.contains("gpt-5-chat")
+        || normalized == "gpt-5"
+    {
+        TokenRates {
+            input: 1.25,
+            cache_read: 0.125,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-5-mini") {
+        TokenRates {
+            input: 0.25,
+            cache_read: 0.025,
+            output: 2.0,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-5-nano") {
+        TokenRates {
+            input: 0.05,
+            cache_read: 0.005,
+            output: 0.40,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-4.1-mini") {
+        TokenRates {
+            input: 0.40,
+            cache_read: 0.10,
+            output: 1.60,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-4.1-nano") {
+        TokenRates {
+            input: 0.10,
+            cache_read: 0.025,
+            output: 0.40,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-4.1") {
+        TokenRates {
+            input: 2.0,
+            cache_read: 0.50,
+            output: 8.0,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-4o-mini") {
+        TokenRates {
+            input: 0.15,
+            cache_read: 0.075,
+            output: 0.60,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else if normalized.contains("gpt-4o") {
+        TokenRates {
+            input: 2.50,
+            cache_read: 1.25,
+            output: 10.0,
+            cache_write: 0.0,
+            cache_read_is_input_subset: true,
+        }
+    } else {
+        return None;
+    };
+
+    if (normalized.contains("gpt-5.5") || normalized.contains("gpt-5.4")) && input_tokens > 272_000
+    {
+        rates.input *= 2.0;
+        rates.cache_read *= 2.0;
+        rates.output *= 1.5;
+    }
+
+    Some(rates)
 }
 
 /// Format a token count for display (e.g., 1200 -> "1.2k", 1500000 -> "1.5M")
@@ -103,5 +286,43 @@ pub fn format_cost(cost: f64) -> String {
         format!("${:.2}", cost)
     } else {
         format!("${:.1}", cost)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computes_claude_cost_with_prompt_cache_rates() {
+        let cost = compute_provider_cost(
+            ProviderKind::Claude,
+            "claude-sonnet-4-6",
+            1000,
+            100,
+            50,
+            200,
+        )
+        .unwrap();
+
+        let expected = (1000.0 * 3.0 + 100.0 * 15.0 + 50.0 * 3.75 + 200.0 * 0.30) / 1_000_000.0;
+        assert!((cost - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn computes_openai_cost_with_cached_input_subset() {
+        let cost =
+            compute_provider_cost(ProviderKind::Codex, "gpt-5.5", 1000, 100, 0, 200).unwrap();
+
+        let expected = (800.0 * 5.0 + 200.0 * 0.50 + 100.0 * 30.0) / 1_000_000.0;
+        assert!((cost - expected).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn leaves_unknown_models_unpriced() {
+        assert!(
+            compute_provider_cost(ProviderKind::Codex, "codex-auto-review", 1000, 100, 0, 0)
+                .is_none()
+        );
     }
 }

@@ -44,7 +44,13 @@ impl EventHandler {
                                 _ => None,
                             };
                             if let Some(up) = scroll_event {
-                                if tx_key.send(AppEvent::MouseScroll { column: mouse.column, up }).is_err() {
+                                if tx_key
+                                    .send(AppEvent::MouseScroll {
+                                        column: mouse.column,
+                                        up,
+                                    })
+                                    .is_err()
+                                {
                                     break;
                                 }
                             }

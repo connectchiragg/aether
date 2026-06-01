@@ -102,7 +102,7 @@ jobs:
           VERSION=${{ steps.version.outputs.version }}
           cat > homebrew-tap/Formula/aether.rb << FORMULA
           class Aether < Formula
-            desc "Live agent observability for Claude Code"
+            desc "Live observability for coding agents"
             homepage "https://github.com/connectchiragg/aether"
             version "${VERSION}"
             license "MIT"
@@ -133,12 +133,12 @@ jobs:
 
             def caveats
               <<~EOS
-                Run setup to install the Claude Code skill and hooks:
-                  aether setup
+                Enable one or more providers:
+                  aether setup claude
+                  aether setup codex
 
                 Then:
-                  aether watch        # start watching sessions
-                  /aether             # in Claude Code to enable metrics
+                  aether watch        # choose a provider and watch sessions
 
                 To clean up after uninstall:
                   curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/uninstall.sh | bash

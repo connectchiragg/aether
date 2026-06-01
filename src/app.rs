@@ -4,10 +4,12 @@ use std::path::PathBuf;
 use crate::engine::Engine;
 use crate::live::LiveEngine;
 use crate::mock::MockEngine;
+use crate::provider::ProviderKind;
 
 #[derive(PartialEq)]
 pub enum View {
     Boot,
+    Providers,
     Sessions,
     Agent,
     Graph,
@@ -19,6 +21,7 @@ pub struct App {
     pub paused: bool,
     pub focused_pane: usize,
     pub session_locked: bool,
+    pub provider_list_cursor: usize,
     pub session_list_cursor: usize,
     pub boot_ticks: u16,
     /// Global tick counter (increments every frame, wraps)
@@ -54,6 +57,7 @@ impl App {
             paused: false,
             focused_pane: 0,
             session_locked: true,
+            provider_list_cursor: 0,
             session_list_cursor: 0,
             boot_ticks: 0,
             tick: 0,
@@ -71,13 +75,18 @@ impl App {
         }
     }
 
-    pub fn new_live(threads_dir: PathBuf) -> Self {
+    pub fn new_live(provider: Option<ProviderKind>, dir: Option<PathBuf>) -> Self {
+        Self::with_live_engine(LiveEngine::new(provider, dir))
+    }
+
+    fn with_live_engine(engine: LiveEngine) -> Self {
         Self {
-            engine: Engine::Live(LiveEngine::new(threads_dir)),
+            engine: Engine::Live(engine),
             should_quit: false,
             paused: false,
             focused_pane: 0,
             session_locked: false,
+            provider_list_cursor: 0,
             session_list_cursor: 0,
             boot_ticks: 0,
             tick: 0,

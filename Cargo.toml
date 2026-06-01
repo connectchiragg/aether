@@ -1,9 +1,9 @@
 [package]
 name = "aether"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
-description = "Live agent observability for Claude Code"
+description = "Live observability for coding agents"
 repository = "https://github.com/connectchiragg/aether"
 
 [dependencies]

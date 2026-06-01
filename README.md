@@ -1,8 +1,8 @@
 # aether
 
-See the invisible — live agent observability for Claude Code.
+See the invisible -- live observability for coding agents.
 
-A terminal UI that watches Claude Code sessions in real-time, showing token usage, costs, sub-agent activity, per-turn quality metrics, and an interactive cost explorer.
+A terminal UI that watches local agent session files in real time, showing sessions, turns, token usage, costs where known, sub-agent/tool activity, quality metrics where available, and an interactive graph view.
 
 ## Quick Start
 
@@ -13,7 +13,6 @@ A terminal UI that watches Claude Code sessions in real-time, showing token usag
 ```bash
 brew tap connectchiragg/tap
 brew install aether
-aether setup
 ```
 
 **Or via script:**
@@ -22,12 +21,29 @@ aether setup
 curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/install.sh | bash
 ```
 
-### 2. Watch
+### 2. Enable Providers
+
+```bash
+aether setup claude
+aether setup codex
+```
+
+Claude setup installs the Claude Code skill and metrics hook. Codex setup enables Aether's local Codex session watcher.
+
+### 3. Watch
 
 ```bash
 aether watch
 ```
 
+`aether watch` opens a provider list. Choose a provider to browse its sessions.
+
+You can also jump directly to a provider:
+
+```bash
+aether watch claude
+aether watch codex
+```
 
 ## Uninstall
 
@@ -35,67 +51,49 @@ aether watch
 curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/uninstall.sh | bash
 ```
 
-Removes the binary, skill, hooks, recaps cache, and cleans up settings.json.
+Removes the binary, Claude Code skill/hooks, recaps cache, and cleans up Claude settings.
 
-## Install from source
+## Providers
 
-```bash
-cargo install --git https://github.com/connectchiragg/aether
-```
+### Claude Code
 
-Then set up the skill and hook:
+Reads Claude Code's local JSONL session files from `~/.claude/projects/*/` and Aether hook files from `~/.claude/threads/`. It parses session names, token usage, provider-aware model costs, sub-agent activity, and Aether `turn-metrics` events.
 
-```bash
-# Skill
-mkdir -p ~/.claude/skills/aether
-curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/skills/aether/SKILL.md \
-  -o ~/.claude/skills/aether/SKILL.md
+### Codex
 
-# Metrics hook (installed inactive — /aether activates it)
-mkdir -p ~/.claude/hooks
-curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/hooks/aether-metrics.py \
-  -o ~/.claude/hooks/aether-metrics.py.off
-chmod +x ~/.claude/hooks/aether-metrics.py.off
-```
+Reads Codex rollout JSONL files from `~/.codex/sessions/**/*.jsonl`. It parses session metadata, user turns, assistant responses, tool/action events, model IDs, and token usage where present. Costs are calculated for recognized OpenAI/Codex models and shown as unknown for internal or unpriced model IDs.
 
-Register the Stop hook in `~/.claude/settings.json`:
+## What You See
 
-```json
-{
-  "hooks": {
-    "Stop": [{
-      "matcher": "",
-      "hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/aether-metrics.py"}]
-    }]
-  }
-}
-```
+### Provider List
 
-### Requirements
-
-- macOS (arm64/x86) or Linux (x86/arm64)
-- Claude Code CLI installed
-- A terminal with Unicode support
-
-## What you see
+Browse enabled or available providers, their session counts, and recent activity.
 
 ### Session List
 
-Browse all detected sessions with names, costs, and token counts.
+Browse sessions for the selected provider with names, source labels, provider-specific model costs where priced, token counts, and turn counts.
 
 ### Graph View
 
 Interactive dot graph with a detail panel per turn showing:
 
-- **Prompt and Response** — user prompt and assistant response (press `e` to expand)
-- **Cost and Tokens** — per-turn and cumulative context
-- **Sub-agents** — spawned agents with their request/response
-- **Quality Metrics** — friction, hallucination, confidence, acceptance, performance (scored by Haiku)
-- **Reasoning** — Haiku's assessment of the turn
+- **Prompt and Response** -- user prompt and assistant response
+- **Cost and Tokens** -- per-turn and cumulative context
+- **Sub-agents / Tools** -- spawned agents, tool calls, and related output
+- **Quality Metrics** -- friction, hallucination, confidence, acceptance, performance when available
+- **Reasoning** -- available metric reasoning or recap when present
 
 Press `c` to switch the graph between cost, friction, hallucination, confidence, acceptance, and performance.
 
-### Keybindings
+## Keybindings
+
+**Provider List**
+
+| Key | Action |
+|-----|--------|
+| `Up/Down` | Navigate providers |
+| `Enter` | Open provider |
+| `q` | Quit |
 
 **Session List**
 
@@ -104,6 +102,7 @@ Press `c` to switch the graph between cost, friction, hallucination, confidence,
 | `Up/Down` | Navigate sessions |
 | `Enter` | Open session |
 | `r` | Rename session |
+| `Esc` | Back to providers |
 | `q` | Quit |
 
 **Graph View**
@@ -114,18 +113,10 @@ Press `c` to switch the graph between cost, friction, hallucination, confidence,
 | `Up/Down` | Switch sessions |
 | `h/l` | First/last turn |
 | `g` | Go to turn number |
-| `c` | Change graph (cost/friction/hallucination/confidence/acceptance/performance) |
-| `+/-` | Zoom in/out graph |
+| `c` | Change graph |
+| `+/-` | Zoom graph |
 | `e` | Expand/collapse content |
 | `Esc` | Back to session list |
 | `q` | Quit |
 
-Mouse scroll works in the detail panel.
-
-## How it works
-
-**Session data** — Reads Claude Code's native JSONL session files from `~/.claude/projects/*/`. Parses session names, token usage, costs per model (Opus/Sonnet/Haiku), and sub-agent activity. All data updates live.
-
-**Quality metrics** — When `/aether` is enabled, a Stop hook runs after each Claude response. It calls `claude -p --model haiku` to score the turn, then writes the scores back into the session JSONL as a `turn-metrics` event. A rolling recap chains context between turns so Haiku can evaluate each turn in context. No API key needed — uses your Claude Code subscription.
-
-**Cost** — Metrics scoring costs ~$0.001 per turn via Haiku.
+Mouse scroll works in lists and detail panels.
