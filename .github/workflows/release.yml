@@ -94,7 +94,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: connectchiragg/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.AETHER_TOKEN }}
+          token: ${{ secrets.AETHER_TOKEN }}
           path: homebrew-tap
 
       - name: Update formula
