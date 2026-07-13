@@ -506,7 +506,7 @@ impl SessionState {
                     if let Some(id) = payload.get("id").and_then(|id| id.as_str()) {
                         self.session_id = id.to_string();
                     }
-                    if self.name_override.is_none() {
+                    if self.name_override.is_none() && !self.native_name_resolved {
                         if let Some(cwd) = payload.get("cwd").and_then(|cwd| cwd.as_str()) {
                             self.name = PathBuf::from(cwd)
                                 .file_name()
@@ -1506,6 +1506,12 @@ mod tests {
 
         assert_eq!(session.name, "recognizable session name");
         assert!(session.native_name_resolved);
+
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:02Z","type":"session_meta","payload":{"id":"codex-session","cwd":"/tmp/project"}}"#,
+        );
+
+        assert_eq!(session.name, "recognizable session name");
     }
 
     #[test]
