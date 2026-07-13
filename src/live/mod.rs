@@ -513,7 +513,6 @@ impl SessionState {
                                 .and_then(|name| name.to_str())
                                 .unwrap_or("Codex session")
                                 .to_string();
-                            self.native_name_resolved = true;
                         }
                     }
                 }
@@ -1479,7 +1478,7 @@ mod tests {
         );
 
         assert_eq!(session.session_id, "codex-session");
-        assert_eq!(session.name, "project");
+        assert_eq!(session.name, "write a test");
         assert_eq!(session.usage.turn_count(), 1);
         assert_eq!(session.usage.turns[0].prompt, "write a test");
         assert_eq!(session.usage.turns[0].response_text, "done");
@@ -1487,6 +1486,43 @@ mod tests {
         assert_eq!(session.usage.turns[0].cache_read_tokens, 2);
         assert_eq!(session.usage.turns[0].output_tokens, 5);
         assert!(!session.usage.turns[0].cost_known);
+    }
+
+    #[test]
+    fn codex_project_name_is_only_a_fallback_until_the_first_prompt() {
+        let mut session =
+            SessionState::new(PathBuf::from("rollout-test.jsonl"), ProviderKind::Codex);
+
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:00Z","type":"session_meta","payload":{"id":"codex-session","cwd":"/tmp/project"}}"#,
+        );
+
+        assert_eq!(session.name, "project");
+        assert!(!session.native_name_resolved);
+
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"recognizable session name"}}"#,
+        );
+
+        assert_eq!(session.name, "recognizable session name");
+        assert!(session.native_name_resolved);
+    }
+
+    #[test]
+    fn codex_synthetic_user_records_do_not_replace_the_project_fallback() {
+        let mut session =
+            SessionState::new(PathBuf::from("rollout-test.jsonl"), ProviderKind::Codex);
+
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:00Z","type":"session_meta","payload":{"id":"codex-session","cwd":"/tmp/project"}}"#,
+        );
+        session.process_line(
+            r#"{"timestamp":"2026-05-31T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/tmp/project</cwd>\n</environment_context>"}]}}"#,
+        );
+
+        assert_eq!(session.name, "project");
+        assert!(!session.native_name_resolved);
+        assert_eq!(session.usage.turn_count(), 0);
     }
 
     #[test]
