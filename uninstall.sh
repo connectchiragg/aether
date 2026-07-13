@@ -34,6 +34,12 @@ for f in aether-hook.py aether-hook.py.off aether-metrics.py aether-metrics.py.o
   fi
 done
 
+# Remove provider configuration and persisted session names
+if [ -d "$HOME/.config/aether" ]; then
+  rm -rf "$HOME/.config/aether"
+  dim "  Removed configuration"
+fi
+
 # Remove recaps
 if [ -d "$HOME/.claude/.aether-recaps" ]; then
   rm -rf "$HOME/.claude/.aether-recaps"
