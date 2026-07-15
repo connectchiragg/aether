@@ -38,7 +38,7 @@ pub struct ProviderStatus {
     pub enabled: bool,
     pub available: bool,
     pub session_count: usize,
-    pub last_modified: u64,
+    pub last_activity: u64,
 }
 
 impl ProviderStatus {
@@ -46,7 +46,7 @@ impl ProviderStatus {
         if self.enabled {
             "enabled"
         } else if self.available {
-            "available"
+            "not set up"
         } else {
             "not found"
         }
@@ -102,14 +102,14 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-pub fn claude_threads_dir() -> PathBuf {
-    home_dir().join(".claude").join("threads")
-}
-
 pub fn claude_projects_dir() -> PathBuf {
     home_dir().join(".claude").join("projects")
 }
 
 pub fn codex_sessions_dir() -> PathBuf {
     home_dir().join(".codex").join("sessions")
+}
+
+pub fn codex_session_index_path() -> PathBuf {
+    home_dir().join(".codex").join("session_index.jsonl")
 }

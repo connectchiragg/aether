@@ -33,6 +33,10 @@ pub struct App {
     pub session_list_scroll: u16,
     /// Selected dot index in the graph view
     pub selected_dot: usize,
+    /// Stable first turn in the graph viewport; moves only at a viewport edge.
+    pub graph_window_start: usize,
+    /// Last horizontal graph navigation: -1 for left, 1 for right.
+    pub graph_navigation_direction: i8,
     /// Jump-to-turn input buffer in graph view (typing a number)
     pub graph_jump_input: Option<String>,
     /// Rename input state: Some(buffer) when actively renaming
@@ -41,10 +45,6 @@ pub struct App {
     pub pane_columns: Vec<(u16, u16)>,
     /// Per-pane max scroll (estimated during render)
     pub pane_max_scrolls: HashMap<usize, u16>,
-    /// Which metric the graph plots: 0=cost(default), 1=friction, 2=hallucination, 3=confidence, 4=acceptance, 5=performance
-    pub graph_metric: u8,
-    /// Graph zoom level: positive = zoom in (fewer dots), negative = zoom out (more dots, no labels)
-    pub graph_zoom: i8,
     /// Expanded view: 'u' = full user prompt, 'a' = full agent response, None = normal
     pub expanded_view: Option<char>,
 }
@@ -65,12 +65,12 @@ impl App {
             pane_scrolls: HashMap::new(),
             session_list_scroll: 0,
             selected_dot: 0,
+            graph_window_start: 0,
+            graph_navigation_direction: 1,
             graph_jump_input: None,
             rename_input: None,
             pane_columns: Vec::new(),
             pane_max_scrolls: HashMap::new(),
-            graph_metric: 0,
-            graph_zoom: 0i8,
             expanded_view: None,
         }
     }
@@ -94,12 +94,12 @@ impl App {
             pane_scrolls: HashMap::new(),
             session_list_scroll: 0,
             selected_dot: 0,
+            graph_window_start: 0,
+            graph_navigation_direction: 1,
             graph_jump_input: None,
             rename_input: None,
             pane_columns: Vec::new(),
             pane_max_scrolls: HashMap::new(),
-            graph_metric: 0,
-            graph_zoom: 0i8,
             expanded_view: None,
         }
     }
@@ -117,5 +117,7 @@ impl App {
         self.paused = false;
         self.pane_scrolls.clear();
         self.focused_pane = 0;
+        self.graph_window_start = 0;
+        self.graph_navigation_direction = 1;
     }
 }
