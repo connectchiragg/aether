@@ -26,11 +26,25 @@ if [ -d "$HOME/.claude/skills/aether" ]; then
   dim "  Removed skill"
 fi
 
+# Remove the legacy cross-agent skill location used by older releases
+if [ -d "$HOME/.agents/skills/aether" ]; then
+  rm -rf "$HOME/.agents/skills/aether"
+  dim "  Removed legacy agent skill"
+fi
+
 # Remove legacy Aether Claude hook scripts
 for f in aether-hook.py aether-hook.py.off aether-metrics.py aether-metrics.py.off; do
   if [ -f "$HOME/.claude/hooks/$f" ]; then
     rm -f "$HOME/.claude/hooks/$f"
     dim "  Removed $f"
+  fi
+done
+
+# Remove legacy Aether Codex hooks
+for f in aether-hook.py aether-hook.py.off aether-metrics.py aether-metrics.py.off; do
+  if [ -f "$HOME/.codex/hooks/$f" ]; then
+    rm -f "$HOME/.codex/hooks/$f"
+    dim "  Removed Codex $f"
   fi
 done
 

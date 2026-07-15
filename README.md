@@ -1,125 +1,211 @@
+<div align="center">
+
 # aether
 
-See the invisible -- live observability for coding agents.
+### See the invisible.
 
-A terminal UI that watches local agent session files in real time, showing sessions, turns, token usage, costs where known, sub-agent/tool activity, and synchronized metric timelines.
+<p><strong>Local, live observability for Claude Code and Codex.</strong><br>Understand cost, context, complexity, code changes, tools, compactions, and sub-agents without leaving your terminal.</p>
 
-## Quick Start
+<p><a href="https://github.com/connectchiragg/aether/releases/latest"><img src="https://img.shields.io/github/v/release/connectchiragg/aether?style=flat-square&color=cf3f32" alt="Latest release"></a> <a href="LICENSE"><img src="https://img.shields.io/github/license/connectchiragg/aether?style=flat-square&color=e5b94b" alt="License"></a> <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/built_with-Rust-cf3f32?style=flat-square" alt="Rust"></a> <a href="#install"><img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-d6d3d1?style=flat-square" alt="Platforms"></a></p>
 
-### 1. Install
+<br>
 
-**Homebrew (macOS/Linux):**
+<img src="docs/assets/aether-launch.png" alt="Aether launch screen scanning local AI coding providers" width="100%">
+
+</div>
+
+https://github.com/user-attachments/assets/c550f7cc-3017-4a40-a6e3-76684fa2aa2a
+
+<div align="center">
+  <sub>46-second product tour. Silent, local, and running in a standard terminal.</sub>
+</div>
+
+---
+
+Your coding agent already leaves a trail. Aether turns that trail into a live operational picture.
+
+It reads the native session files already written by Claude Code and Codex, organizes chats by project, preserves parent-to-agent relationships, and renders synchronized telemetry in a fast terminal UI. No SDK instrumentation. No API keys. No cloud dashboard.
+
+<img src="docs/assets/aether-metrics.png" alt="Aether synchronized metrics dashboard" width="100%">
+
+## Install
+
+Three commands take you from zero to a live dashboard:
 
 ```bash
-brew tap connectchiragg/tap
-brew install aether
+brew install connectchiragg/tap/aether
+aether setup claude && aether setup codex
+aether watch
 ```
 
-**Or via script:**
+Enable only the provider you use:
+
+```bash
+aether setup claude
+# or
+aether setup codex
+```
+
+Without Homebrew:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/install.sh | bash
 ```
 
-### 2. Enable Providers
+Setup only enables local discovery for the selected provider. Aether does **not** install hooks, modify transcripts, or make additional model calls.
 
-```bash
-aether setup claude
-aether setup codex
+## What Aether Shows
+
+| Signal | What it tells you |
+|---|---|
+| **Context** | How much of the model window is occupied, including real compaction resets |
+| **Duration** | Which turns are slow and how far they deviate from the session median |
+| **Estimated cost** | API-equivalent token cost per turn and across the session |
+| **Tokens** | Input, output, cache, and reasoning usage emitted by the provider |
+| **Turn complexity** | A deterministic 0-100% view of reasoning effort |
+| **Code diff** | Successful additions, removals, created files, and deleted files |
+| **Agent topology** | Which parent turn spawned sub-agents and what each agent did |
+| **Actions** | Tools, patches, searches, compactions, outcomes, and model metadata |
+
+All six graph panels share the same turn range and selection. Move once and every signal stays aligned, making correlations visible instead of forcing you to compare separate dashboards.
+
+## Trace Agents, Not Extra Chats
+
+Sub-agents and hooks belong to the parent turn that created them. Aether keeps them there.
+
+<img src="docs/assets/aether-agents.png" alt="Aether showing five nested agents within their parent Codex turn" width="100%">
+
+The turn detail shows each agent's request, response, model, duration, token use, tools, and code impact. Nested work no longer pollutes the session list or hides behind a single aggregate number.
+
+## Provider Support
+
+### Claude Code
+
+Aether reads Claude Code's native JSONL sessions from `~/.claude/projects/` and understands:
+
+- Native titles and project identity
+- Parent sessions and nested agent activity
+- Models, completion state, and duration
+- Input, output, cache, and thinking-response usage
+- Context utilization and deterministic complexity
+- Successful edits, tools, and outcomes
+
+Repeated content blocks sharing a Claude message ID are counted once.
+
+### Codex
+
+Aether reads Codex rollouts from `~/.codex/sessions/` and native titles from the Codex session index. It understands:
+
+- Native task titles and project identity
+- Parent turns, sub-agents, and hook activity
+- Model IDs and context windows
+- Input, cached input, output, and reasoning tokens
+- Duration, tools, patches, searches, and compactions
+- Applied unified diffs and code-line impact
+
+Provider cards update as supported tools appear on the machine. A live provider flickers; an enabled but idle provider stays solid grey; a hollow marker means it is not set up.
+
+## Cost Estimates
+
+Aether uses the versioned catalog in [`src/model/pricing.json`](src/model/pricing.json), including model aliases, context windows, cache semantics, date-effective prices, and long-context rules.
+
+These are transparent, token-only, API-equivalent estimates. Local Codex rollouts do not expose the amount charged against a ChatGPT subscription or credits balance. Tool fees, regional pricing, subscription allocation, and unknown models are never guessed. Mixed sessions are labeled `partial`.
+
+## How It Works
+
+```text
+Claude JSONL ─┐
+              ├─> provider parsers ─> normalized sessions ─> live TUI
+Codex JSONL ──┘               │
+                              └─> local model pricing catalog
 ```
 
-Setup enables Aether's local session watcher for each provider. Aether does not install provider hooks or make additional model calls.
+1. Aether discovers native provider session files.
+2. Provider-specific parsers normalize turns, usage, actions, and relationships.
+3. Nested records are attached to their native parent session and turn.
+4. The watcher incrementally refreshes the TUI as files change.
+5. Pricing and complexity are derived deterministically from emitted telemetry.
 
-### 3. Watch
+Everything remains on your machine.
 
-```bash
-aether watch
-```
+## Navigation
 
-`aether watch` opens a provider list. Choose a provider to browse its sessions.
+### Providers and Sessions
+
+| Key | Action |
+|---|---|
+| `Arrow keys` | Move through providers or sessions |
+| `Enter` | Open the selected item |
+| `r` | Rename a session locally |
+| `Esc` | Go back |
+| `q` | Quit |
+
+### Dashboard
+
+| Key | Action |
+|---|---|
+| `Left` / `Right` | Move all graphs across turns |
+| `Up` / `Down` | Switch sessions |
+| `h` / `l` | Jump to the first or latest turn |
+| `g` | Go to a turn number |
+| `+` / `-` | Zoom all timelines together |
+| `e` | Expand or collapse turn content |
+| Mouse / trackpad | Scroll the complete dashboard |
+
+## Privacy By Construction
+
+- Session data is read locally.
+- Aether has no hosted backend.
+- No provider API key is required.
+- No prompt, response, or metric is uploaded.
+- No additional LLM is called to generate telemetry.
+- Provider transcripts are never modified.
 
 ## Uninstall
+
+Remove the Homebrew package:
+
+```bash
+brew uninstall aether
+```
+
+Remove Aether configuration and any artifacts from legacy releases:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/uninstall.sh | bash
 ```
 
-Removes the binary and configuration. It also cleans up Aether's legacy Claude skill, hooks, recaps, sidecars, and settings entries from earlier releases.
+## Build From Source
 
-## Providers
+```bash
+git clone https://github.com/connectchiragg/aether.git
+cd aether
+cargo build --release
+./target/release/aether watch
+```
 
-### Claude Code
+Run the test suite with:
 
-Reads Claude Code's native local JSONL session files from `~/.claude/projects/*/`. It parses native titles, projects, token/cache usage, models, completion state, duration, context utilization, thinking effort, tool activity, and successful code edits. Repeated content-block records sharing a Claude message ID are counted once. Aether does not modify Claude's transcripts.
+```bash
+cargo test
+```
 
-### Codex
+## Contributing
 
-Reads Codex rollout JSONL files from `~/.codex/sessions/**/*.jsonl` and native titles from the Codex session index. It parses projects, parent turns, nested sub-agent/hook activity, model IDs, input/cache/output/reasoning tokens, context windows, duration, completion state, tools, patches, searches, and compactions where Codex emits them.
+Issues and pull requests are welcome, especially for:
 
-### Cost Estimates
+- Additional coding-agent providers
+- New native telemetry fields
+- Model pricing updates with official sources
+- Parser fixtures for provider format changes
+- Terminal compatibility and rendering improvements
 
-Aether computes token-only, API-equivalent USD estimates from the versioned catalog at `src/model/pricing.json`. The catalog records model aliases, context windows, cache semantics, date-effective prices, long-context rules, and official source URLs for current OpenAI and Anthropic models.
+Please keep new metrics deterministic and label estimates explicitly.
 
-Codex local rollouts expose model and token usage, but not the actual per-turn amount charged to a ChatGPT subscription or credits balance. Aether therefore labels these values as estimates. Tool fees, subscription allocation, regional uplifts, and models missing from the catalog are not guessed. Sessions containing both priced and unpriced turns are marked `partial`.
+## License
 
-## What You See
+[MIT](LICENSE)
 
-### Provider List
-
-Browse enabled or available providers as large branded cards with their session counts and recent activity.
-
-- A flickering solid circle means activity within the last five minutes.
-- A grey solid circle means the provider is set up but idle.
-- A hollow circle means the provider is not set up or has not been found yet.
-
-Supported providers installed after Aether are discovered on the next scan. Run the corresponding `aether setup` command to enable its integration; an already-open watcher reloads that setup state automatically.
-
-### Session List
-
-Browse sessions grouped by project with native names, source labels, token-cost estimates where priced, token counts, and turn counts. Nested activity with a native parent relationship remains inside its parent session.
-
-### Metrics Dashboard
-
-Six synchronized metric panels in a 3 x 2 dashboard with a detail panel per turn showing:
-
-- **Prompt and Response** -- user prompt and assistant response
-- **Native Telemetry** -- model, outcome, duration, context utilization, cache ratio, turn complexity, tools, patches, searches, compactions, and code lines changed
-- **Cost and Tokens** -- per-turn token-cost estimate and cumulative context
-- **Sub-agents / Tools** -- spawned agents, tool calls, and related output
-
-Context, duration, cost estimate, tokens, turn complexity, and code diff are visible together. Every panel shares the same turn range, selection, and zoom so `Left` and `Right` move the complete dashboard together. Context uses a fixed 0-100% scale and combines Claude's native input/cache buckets with the cataloged model window when Claude Code omits the window itself. Native request samples preserve each compaction's pre-reset and post-reset levels, highlighted with a yellow `▼`, while the regular turn dot remains the final KPI. Complexity is a deterministic 0-100% view capped at 16,000 effort tokens: exact provider reasoning tokens are preferred, with Claude thinking-response output used as a labeled upper-bound proxy when its exact breakdown is absent. Code diff counts successful Claude edits and applied Codex unified-diff additions plus removals. Missing native fields are shown as `not emitted`.
-
-## Keybindings
-
-**Provider List**
-
-| Key | Action |
-|-----|--------|
-| `Left/Right` or `Up/Down` | Navigate providers |
-| `Enter` | Open provider |
-| `q` | Quit |
-
-**Session List**
-
-| Key | Action |
-|-----|--------|
-| `Up/Down` | Navigate sessions |
-| `Enter` | Open session |
-| `r` | Rename session |
-| `Esc` | Back to providers |
-| `q` | Quit |
-
-**Graph View**
-
-| Key | Action |
-|-----|--------|
-| `Left/Right` | Navigate turns |
-| `Up/Down` | Switch sessions |
-| `h/l` | First/last turn |
-| `g` | Go to turn number |
-| `+/-` | Zoom all metric timelines |
-| `e` | Expand/collapse content |
-| `Esc` | Back to session list |
-| `q` | Quit |
-
-Mouse scroll works in lists and detail panels.
+<div align="center">
+  <sub>Built for people who want to understand what their agents are actually doing.</sub>
+</div>
