@@ -13,7 +13,10 @@ mod ui;
 use app::{App, View};
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, KeyCode,
+        KeyEvent, KeyModifiers,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -37,8 +40,6 @@ struct Cli {
 enum Commands {
     /// Watch enabled provider sessions
     Watch {
-        /// Provider to open directly
-        provider: Option<ProviderKind>,
         /// Override the provider session directory
         #[arg(short, long)]
         dir: Option<PathBuf>,
@@ -55,7 +56,7 @@ async fn main() -> io::Result<()> {
         Some(Commands::Setup { provider }) => {
             return run_setup(provider);
         }
-        Some(Commands::Watch { provider, dir }) => App::new_live(provider, dir),
+        Some(Commands::Watch { dir }) => App::new_live(None, dir),
         None => {
             eprintln!("Usage: aether <command>\n\n  aether setup <provider>   Enable a provider\n  aether watch              Choose a provider and watch sessions\n");
             return Ok(());
@@ -65,7 +66,12 @@ async fn main() -> io::Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableFocusChange
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -82,7 +88,8 @@ async fn main() -> io::Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableFocusChange
     )?;
     terminal.show_cursor()?;
 
@@ -94,136 +101,32 @@ async fn main() -> io::Result<()> {
 }
 
 fn run_setup(provider: Option<ProviderKind>) -> io::Result<()> {
-    use std::process::Command;
-    use std::thread;
-    use std::time::Duration;
-
     match provider {
         None => return print_setup_status(),
         Some(ProviderKind::Codex) => return run_setup_codex(),
         Some(ProviderKind::Claude) => {}
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let skill_dir = format!("{}/.claude/skills/aether", home);
-    let hooks_dir = format!("{}/.claude/hooks", home);
-    let settings_path = format!("{}/.claude/settings.json", home);
-
-    // Animated header
     let eye = "\x1b[31m⠑⠽⠑\x1b[0m";
     println!();
     println!("  {} \x1b[1;31maether\x1b[0m setup", eye);
     println!("  \x1b[2m─────────────────────\x1b[0m");
     println!();
 
-    let steps: &[(&str, Box<dyn Fn() -> bool>)] = &[
-        (
-            "Installing skill",
-            Box::new(|| {
-                let _ = std::fs::create_dir_all(&skill_dir);
-                Command::new("curl")
-                .args(["-fsSL",
-                    "https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/skills/aether/SKILL.md",
-                    "-o", &format!("{}/SKILL.md", skill_dir)])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-            }),
-        ),
-        (
-            "Installing metrics hook",
-            Box::new(|| {
-                let _ = std::fs::create_dir_all(&hooks_dir);
-                let hook_active = format!("{}/aether-metrics.py", hooks_dir);
-                let hook_off = format!("{}/aether-metrics.py.off", hooks_dir);
-                // If inactive version exists, activate it
-                if std::path::Path::new(&hook_off).exists() {
-                    let _ = std::fs::rename(&hook_off, &hook_active);
-                    return true;
-                }
-                if std::path::Path::new(&hook_active).exists() {
-                    return true;
-                }
-                // Download and install active
-                let ok = Command::new("curl")
-                .args(["-fsSL",
-                    "https://raw.githubusercontent.com/connectchiragg/aether/master/.claude/hooks/aether-metrics.py",
-                    "-o", &hook_active])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-                #[cfg(unix)]
-                if ok {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &hook_active,
-                        std::fs::Permissions::from_mode(0o755),
-                    );
-                }
-                ok
-            }),
-        ),
-        (
-            "Registering hooks",
-            Box::new(|| {
-                Command::new("python3")
-                    .arg("-c")
-                    .arg(format!(
-                        r#"
-import json, os
-path = "{}"
-settings = {{}}
-if os.path.exists(path):
-    try:
-        with open(path) as f: settings = json.load(f)
-    except: pass
-hooks = settings.get("hooks", {{}})
-stop = hooks.get("Stop", [])
-cmd = "python3 ~/.claude/hooks/aether-metrics.py"
-if not any(cmd in h.get("command","") for e in stop for h in e.get("hooks",[])):
-    stop.append({{"matcher":"","hooks":[{{"type":"command","command":cmd}}]}})
-    hooks["Stop"] = stop
-    settings["hooks"] = hooks
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path,"w") as f: json.dump(settings, f, indent=2)
-"#,
-                        settings_path
-                    ))
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-            }),
-        ),
-    ];
-
-    for (label, action) in steps {
-        // Show spinner
-        print!("  \x1b[2m◌\x1b[0m {label}...");
-        let _ = io::Write::flush(&mut io::stdout());
-        thread::sleep(Duration::from_millis(100));
-
-        let ok = action();
-
-        // Clear line and show result
-        print!("\r");
-        if ok {
-            println!("  \x1b[31m●\x1b[0m {label}");
-        } else {
-            println!("  \x1b[33m○\x1b[0m {label} \x1b[2m(skipped)\x1b[0m");
-        }
-    }
-
     let mut config = AetherConfig::load();
     config.enable(ProviderKind::Claude);
-    let _ = config.save();
+    config.save()?;
 
-    println!();
+    println!("  \x1b[31m●\x1b[0m Claude provider enabled");
     println!("  \x1b[2m─────────────────────\x1b[0m");
     println!("  \x1b[1;31m✓\x1b[0m Claude setup complete");
     println!();
+    println!(
+        "  \x1b[2mAether will watch\x1b[0m  \x1b[1m{}\x1b[0m",
+        provider::claude_projects_dir().display()
+    );
     println!("  \x1b[2mRun\x1b[0m  \x1b[1maether watch\x1b[0m          \x1b[2mto choose a provider\x1b[0m");
-    println!("  \x1b[2mor\x1b[0m   \x1b[1maether watch claude\x1b[0m   \x1b[2mto open Claude sessions\x1b[0m");
-    println!("  \x1b[2mMetrics are now active for all new Claude Code sessions\x1b[0m");
+    println!("  \x1b[2mNo Claude hooks or additional model calls are installed\x1b[0m");
     println!();
 
     Ok(())
@@ -259,7 +162,6 @@ fn run_setup_codex() -> io::Result<()> {
         provider::codex_sessions_dir().display()
     );
     println!("  \x1b[2mRun\x1b[0m  \x1b[1maether watch\x1b[0m         \x1b[2mto choose a provider\x1b[0m");
-    println!("  \x1b[2mor\x1b[0m   \x1b[1maether watch codex\x1b[0m   \x1b[2mto open Codex sessions\x1b[0m");
     println!();
     Ok(())
 }
@@ -277,6 +179,12 @@ async fn run_app(
 
         match events.next().await {
             Some(AppEvent::Key(key)) => {
+                if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if let Err(error) = force_terminal_redraw(terminal) {
+                        return (Err(error), events);
+                    }
+                    continue;
+                }
                 // Any key press during boot skips to main view
                 if app.view == View::Boot {
                     app.view = if let Some(live) = app.engine.live_engine() {
@@ -320,12 +228,13 @@ async fn run_app(
                         }
                     }
                 } else if app.view == View::Graph {
-                    // Scroll the detail panel
+                    // Scroll the complete graph + transcript document.
                     let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
+                    let max = app.pane_max_scrolls.get(&usize::MAX).copied().unwrap_or(0);
                     let new_val = if up {
                         cur.saturating_sub(3)
                     } else {
-                        cur.saturating_add(3)
+                        cur.saturating_add(3).min(max)
                     };
                     app.pane_scrolls.insert(usize::MAX, new_val);
                 } else if app.view == View::Agent {
@@ -344,6 +253,11 @@ async fn run_app(
                         };
                         app.pane_scrolls.insert(pane_idx, new_val);
                     }
+                }
+            }
+            Some(AppEvent::Redraw) => {
+                if let Err(error) = force_terminal_redraw(terminal) {
+                    return (Err(error), events);
                 }
             }
             Some(AppEvent::Tick) => {
@@ -393,6 +307,7 @@ async fn run_app(
                             .unwrap_or(0);
                         if new_count > prev_turn_count {
                             app.selected_dot = new_count.saturating_sub(1);
+                            app.graph_navigation_direction = 1;
                         }
                     }
                 }
@@ -406,6 +321,11 @@ async fn run_app(
     }
 
     (Ok(()), events)
+}
+
+fn force_terminal_redraw<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    terminal.autoresize()?;
+    terminal.clear()
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) {
@@ -424,7 +344,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
     if app.view == View::Providers {
         match key.code {
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Right => {
                 if let Some(live) = app.engine.live_engine() {
                     let count = live.provider_statuses().len();
                     if count > 0 {
@@ -432,7 +352,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                     }
                 }
             }
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Left => {
                 if let Some(live) = app.engine.live_engine() {
                     let count = live.provider_statuses().len();
                     if count > 0 {
@@ -521,6 +441,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                     .map(|s| s.usage.turn_count())
                     .unwrap_or(0);
                 app.selected_dot = turn_count.saturating_sub(1);
+                app.graph_navigation_direction = 1;
                 app.focused_pane = 0;
                 app.pane_scrolls.clear();
             }
@@ -563,8 +484,9 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Enter => {
                     if let Ok(n) = buf.parse::<usize>() {
                         let target = n.saturating_sub(1).min(max_dot);
+                        app.graph_navigation_direction =
+                            if target < app.selected_dot { -1 } else { 1 };
                         app.selected_dot = target;
-                        app.pane_scrolls.insert(usize::MAX, 0);
                     }
                     app.graph_jump_input = None;
                 }
@@ -582,37 +504,26 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
         match key.code {
             KeyCode::Left => {
+                app.graph_navigation_direction = -1;
                 app.selected_dot = app.selected_dot.saturating_sub(1);
-                app.pane_scrolls.insert(usize::MAX, 0);
             }
             KeyCode::Right => {
+                app.graph_navigation_direction = 1;
                 app.selected_dot = (app.selected_dot + 1).min(max_dot);
-                app.pane_scrolls.insert(usize::MAX, 0);
             }
             // First turn
             KeyCode::Home | KeyCode::Char('h') => {
+                app.graph_navigation_direction = -1;
                 app.selected_dot = 0;
-                app.pane_scrolls.insert(usize::MAX, 0);
             }
             // Latest turn
             KeyCode::End | KeyCode::Char('l') => {
+                app.graph_navigation_direction = 1;
                 app.selected_dot = max_dot;
-                app.pane_scrolls.insert(usize::MAX, 0);
             }
             // g = go to turn number
             KeyCode::Char('g') => {
                 app.graph_jump_input = Some(String::new());
-            }
-            // c = cycle graph metric
-            KeyCode::Char('c') => {
-                app.graph_metric = (app.graph_metric + 1) % 6;
-            }
-            // - zoom out (3 levels), + zoom back in
-            KeyCode::Char('-') => {
-                app.graph_zoom = (app.graph_zoom - 1).max(-3);
-            }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                app.graph_zoom = (app.graph_zoom + 1).min(0);
             }
             // e = expand/collapse all content (prompt + response + agent)
             KeyCode::Char('e') => {
@@ -621,9 +532,18 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 } else {
                     Some('e')
                 };
-                app.pane_scrolls.insert(usize::MAX, 0);
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
+                let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
+                let max = app.pane_max_scrolls.get(&usize::MAX).copied().unwrap_or(0);
+                app.pane_scrolls
+                    .insert(usize::MAX, cur.saturating_add(1).min(max));
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let cur = app.pane_scrolls.get(&usize::MAX).copied().unwrap_or(0);
+                app.pane_scrolls.insert(usize::MAX, cur.saturating_sub(1));
+            }
+            KeyCode::Char('n') => {
                 // Switch to next session
                 if let Some(live) = app.engine.live_engine_mut() {
                     live.next_session();
@@ -636,9 +556,10 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                     .map(|s| s.usage.turn_count())
                     .unwrap_or(0);
                 app.selected_dot = turn_count.saturating_sub(1);
+                app.graph_navigation_direction = 1;
                 app.pane_scrolls.clear();
             }
-            KeyCode::Up => {
+            KeyCode::Char('p') => {
                 // Switch to previous session
                 if let Some(live) = app.engine.live_engine_mut() {
                     live.prev_session();
@@ -651,6 +572,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                     .map(|s| s.usage.turn_count())
                     .unwrap_or(0);
                 app.selected_dot = turn_count.saturating_sub(1);
+                app.graph_navigation_direction = 1;
                 app.pane_scrolls.clear();
             }
             KeyCode::Esc => {
@@ -736,5 +658,38 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.set_scroll_offset(cur.saturating_sub(1));
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, widgets::Paragraph};
+
+    #[test]
+    fn watch_uses_one_provider_agnostic_command() {
+        let cli = Cli::try_parse_from(["aether", "watch"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Watch { dir: None })));
+        assert!(Cli::try_parse_from(["aether", "watch", "codex"]).is_err());
+        assert!(Cli::try_parse_from(["aether", "watch", "claude"]).is_err());
+    }
+
+    #[test]
+    fn forced_redraw_restores_terminal_contents_lost_outside_ratatui() {
+        let backend = TestBackend::new(12, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let render =
+            |frame: &mut Frame| frame.render_widget(Paragraph::new("aether"), frame.area());
+
+        terminal.draw(render).unwrap();
+        terminal.backend().assert_buffer_lines(["aether      "]);
+
+        terminal.backend_mut().clear().unwrap();
+        terminal.draw(render).unwrap();
+        terminal.backend().assert_buffer_lines(["            "]);
+
+        force_terminal_redraw(&mut terminal).unwrap();
+        terminal.draw(render).unwrap();
+        terminal.backend().assert_buffer_lines(["aether      "]);
     }
 }
