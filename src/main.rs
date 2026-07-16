@@ -63,6 +63,11 @@ async fn main() -> io::Result<()> {
         }
     };
 
+    // Session discovery and cold replay are synchronous. The first tick discovers
+    // and selects the newest session; the second replays it before the animation.
+    app.engine.tick(app.session_locked);
+    app.engine.tick(app.session_locked);
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -265,7 +270,6 @@ async fn run_app(
                 // Advance boot animation
                 if app.view == View::Boot {
                     app.boot_ticks += 1;
-                    app.engine.tick(app.session_locked);
                     // After boot: always go to session list in live mode
                     if app.boot_ticks >= 54 {
                         app.view = if let Some(live) = app.engine.live_engine() {
@@ -474,7 +478,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             .map(|s| s.usage.turn_count())
             .unwrap_or(0);
         let max_dot = turn_count.saturating_sub(1);
-
         // Jump-to-turn input mode
         if let Some(ref mut buf) = app.graph_jump_input {
             match key.code {
@@ -487,6 +490,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                         app.graph_navigation_direction =
                             if target < app.selected_dot { -1 } else { 1 };
                         app.selected_dot = target;
+                        app.expanded_view = None;
                     }
                     app.graph_jump_input = None;
                 }
@@ -506,20 +510,24 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Left => {
                 app.graph_navigation_direction = -1;
                 app.selected_dot = app.selected_dot.saturating_sub(1);
+                app.expanded_view = None;
             }
             KeyCode::Right => {
                 app.graph_navigation_direction = 1;
                 app.selected_dot = (app.selected_dot + 1).min(max_dot);
+                app.expanded_view = None;
             }
             // First turn
             KeyCode::Home | KeyCode::Char('h') => {
                 app.graph_navigation_direction = -1;
                 app.selected_dot = 0;
+                app.expanded_view = None;
             }
             // Latest turn
             KeyCode::End | KeyCode::Char('l') => {
                 app.graph_navigation_direction = 1;
                 app.selected_dot = max_dot;
+                app.expanded_view = None;
             }
             // g = go to turn number
             KeyCode::Char('g') => {
@@ -558,6 +566,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.selected_dot = turn_count.saturating_sub(1);
                 app.graph_navigation_direction = 1;
                 app.pane_scrolls.clear();
+                app.expanded_view = None;
             }
             KeyCode::Char('p') => {
                 // Switch to previous session
@@ -574,6 +583,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.selected_dot = turn_count.saturating_sub(1);
                 app.graph_navigation_direction = 1;
                 app.pane_scrolls.clear();
+                app.expanded_view = None;
             }
             KeyCode::Esc => {
                 app.session_locked = false;

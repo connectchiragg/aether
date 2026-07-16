@@ -1,3 +1,4 @@
+use super::TurnAttribution;
 /// Token usage and cost tracking per session.
 use crate::provider::ProviderKind;
 use chrono::{NaiveDate, Utc};
@@ -29,6 +30,8 @@ pub struct TurnUsage {
     pub cost_known: bool,
     /// Exact operational signals emitted by the provider runtime.
     pub telemetry: TurnTelemetry,
+    /// Deterministic per-request input-work attribution for this turn.
+    pub attribution: TurnAttribution,
 }
 
 impl TurnUsage {

@@ -1,9 +1,13 @@
 pub mod agent;
+pub mod attribution;
 pub mod message;
 pub mod task;
 pub mod usage;
 
 pub use agent::{Agent, AgentStatus};
+pub use attribution::{
+    estimate_tokens, AttributionCategory, AttributionNode, RequestAttribution, TurnAttribution,
+};
 pub use message::{Message, MessageType};
 pub use task::{Task, TaskState};
 pub use usage::{

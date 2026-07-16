@@ -324,18 +324,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     } else if let Some(live) = app.engine.live_engine() {
         let session_name = live.active_session_name();
         let session = live.sessions.get(live.active_idx);
-        let session_count = live.session_count();
-
-        // Session position
-        left_spans.push(Span::styled(
-            format!(
-                " {}/{}",
-                live.active_session_position().unwrap_or(0),
-                session_count
-            ),
-            Style::default().fg(palette.subtle),
-        ));
-        left_spans.push(Span::styled(" │", Style::default().fg(palette.dim)));
 
         // Session name
         let name_display: String = session_name.chars().take(40).collect();
@@ -452,6 +440,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             &[
                 ("←→", "turns"),
                 ("↑↓", "page"),
+                ("[ ]", "request"),
                 ("n/p", "session"),
                 ("h/l", "first/last turn"),
                 ("g", "goto turn"),

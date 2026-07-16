@@ -12,7 +12,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::App;
 use crate::model::{
     format_cost, format_duration, format_tokens, pricing_catalog_metadata, pricing_source_at,
-    TurnUsage,
+    AttributionCategory, AttributionNode, TurnUsage,
 };
 use crate::provider::ProviderKind;
 use crate::theme;
@@ -31,8 +31,9 @@ const WIDE_DASHBOARD_WIDTH: u16 = 120;
 const MEDIUM_DASHBOARD_WIDTH: u16 = 72;
 const CONTEXT_METRIC_INDEX: usize = 3;
 const COMPLEXITY_METRIC_INDEX: usize = 4;
+const SPIKE_MEDIAN_MULTIPLIER: f64 = 3.0;
 
-const PROMPT_PREVIEW_LEN: usize = 300;
+const PROMPT_PREVIEW_LEN: usize = 240;
 const AGENT_PROMPT_PREVIEW_LEN: usize = 200;
 const AGENT_RESPONSE_PREVIEW_LEN: usize = 300;
 
@@ -63,10 +64,27 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let columns = dashboard_columns(area.width, area.height);
     let rows = DASHBOARD_METRICS.len().div_ceil(columns);
     let (dashboard_height, _) = dashboard_layout_heights(area.height, rows);
+    let telemetry_document = build_telemetry_document(
+        &turns[selected],
+        selected,
+        app,
+        area.width.saturating_sub(2),
+    );
+    let telemetry_height = telemetry_document.height().max(3);
+    let attribution_document =
+        build_attribution_document(&turns[selected], app, area.width.saturating_sub(2));
+    let attribution_height = attribution_document.height().max(3);
     let detail_document =
         build_detail_document(&turns, selected, app, area.width.saturating_sub(2));
-    let detail_height = detail_document.height().max(3);
-    let page_height = dashboard_height.saturating_add(detail_height);
+    let detail_height = detail_panel_height(
+        &detail_document,
+        area.width.saturating_sub(2),
+        app.expanded_view.is_some(),
+    );
+    let page_height = telemetry_height
+        .saturating_add(dashboard_height)
+        .saturating_add(attribution_height)
+        .saturating_add(detail_height);
     let mut page = Buffer::empty(Rect::new(0, 0, area.width, page_height));
     let mut window_start = app.graph_window_start;
     render_dashboard(
@@ -76,12 +94,34 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         provider,
         callout_side,
         &mut window_start,
-        Rect::new(0, 0, area.width, dashboard_height),
+        Rect::new(
+            0,
+            telemetry_height.saturating_add(detail_height),
+            area.width,
+            dashboard_height,
+        ),
+    );
+    render_telemetry_document(
+        &mut page,
+        telemetry_document,
+        Rect::new(0, 0, area.width, telemetry_height),
     );
     render_detail_document(
         &mut page,
         detail_document,
-        Rect::new(0, dashboard_height, area.width, detail_height),
+        Rect::new(0, telemetry_height, area.width, detail_height),
+    );
+    render_attribution_document(
+        &mut page,
+        attribution_document,
+        Rect::new(
+            0,
+            telemetry_height
+                .saturating_add(detail_height)
+                .saturating_add(dashboard_height),
+            area.width,
+            attribution_height,
+        ),
     );
     app.graph_window_start = window_start;
 
@@ -581,22 +621,22 @@ fn spike_message(
     let value = metric_value(turns.get(selected)?, metric)?;
     let median = nonzero_metric_median(turns, metric)?;
     let ratio = value / median;
-    (ratio >= 2.0 && value - median >= minimum_delta)
+    (ratio >= SPIKE_MEDIAN_MULTIPLIER && value - median >= minimum_delta)
         .then(|| format!("{label} was {ratio:.1}x session median"))
 }
 
 fn median_spike_message(turns: &[TurnUsage], selected: usize, metric: u8) -> Option<String> {
     let turn = turns.get(selected)?;
     match metric {
-        0 => spike_message(turns, selected, metric, "cost", 0.01),
+        0 => spike_message(turns, selected, metric, "cost", 0.05),
         1 if !matches!(
             turn.telemetry.outcome,
             crate::model::TurnOutcome::Failed | crate::model::TurnOutcome::Aborted
         ) =>
         {
-            spike_message(turns, selected, metric, "duration", 5_000.0)
+            spike_message(turns, selected, metric, "duration", 15_000.0)
         }
-        2 => spike_message(turns, selected, metric, "token use", 1_000.0),
+        2 => spike_message(turns, selected, metric, "token use", 5_000.0),
         _ => None,
     }
 }
@@ -1577,6 +1617,907 @@ fn render_metric_panel(
     Paragraph::new(Text::from(lines)).render(inner, buffer);
 }
 
+struct AttributionDocument {
+    title: Line<'static>,
+    lines: Vec<Line<'static>>,
+    border_style: Style,
+}
+
+impl AttributionDocument {
+    fn height(&self) -> u16 {
+        (self.lines.len() as u16).saturating_add(2)
+    }
+}
+
+fn build_attribution_document(
+    turn: &TurnUsage,
+    app: &App,
+    inner_width: u16,
+) -> AttributionDocument {
+    let provider_kind = app
+        .engine
+        .live_engine()
+        .and_then(|engine| engine.sessions.get(engine.active_idx))
+        .map(|session| session.provider);
+    let palette = theme::provider_palette(provider_kind);
+    let root = &turn.attribution.aggregate;
+
+    let title = Line::from(vec![
+        Span::styled(
+            " input work ",
+            Style::default()
+                .fg(palette.primary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("── ", Style::default().fg(palette.dim)),
+        Span::styled(
+            if root.estimated {
+                format!("~{}", format_tokens(root.tokens))
+            } else {
+                format_tokens(root.tokens)
+            },
+            Style::default()
+                .fg(palette.highlight)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    let mut lines = vec![Line::from("")];
+    let root_cost = (turn.cost_known || turn.cost > 0.0).then_some(turn.cost);
+    let mut visual_root =
+        build_attribution_visual_tree_with_economics(root, root_cost, turn.telemetry.duration_ms);
+    visual_root.label = attribution_turn_identifier(&turn.prompt);
+    let canvas = build_attribution_infographic(&mut visual_root, inner_width as usize, palette);
+    lines.extend(canvas.lines);
+
+    AttributionDocument {
+        title,
+        lines,
+        border_style: Style::default().fg(palette.dim),
+    }
+}
+
+const ATTRIBUTION_NODE_HEIGHT: usize = 5;
+const ATTRIBUTION_NODE_GAP: usize = 1;
+
+#[derive(Clone, Debug)]
+struct AttributionVisualNode {
+    label: String,
+    tokens: u64,
+    percent_of_root: f64,
+    estimated: bool,
+    cost: Option<f64>,
+    duration_ms: Option<u64>,
+    cost_estimated: bool,
+    duration_estimated: bool,
+    depth: usize,
+    y: usize,
+    children: Vec<AttributionVisualNode>,
+}
+
+struct AttributionCanvas {
+    lines: Vec<Line<'static>>,
+}
+
+fn build_attribution_visual_tree(root: &AttributionNode) -> AttributionVisualNode {
+    build_attribution_visual_tree_with_economics(root, None, None)
+}
+
+fn build_attribution_visual_tree_with_economics(
+    root: &AttributionNode,
+    cost: Option<f64>,
+    duration_ms: Option<u64>,
+) -> AttributionVisualNode {
+    let children = root
+        .children
+        .iter()
+        .map(|category| build_attribution_category_node(category, root.tokens, cost, duration_ms))
+        .collect();
+
+    AttributionVisualNode {
+        label: root.label.clone(),
+        tokens: root.tokens,
+        percent_of_root: root.percent_of_root,
+        estimated: root.estimated,
+        cost,
+        duration_ms,
+        cost_estimated: cost.is_some(),
+        duration_estimated: false,
+        depth: 0,
+        y: 0,
+        children,
+    }
+}
+
+fn attribution_turn_identifier(prompt: &str) -> String {
+    prompt_preview(prompt).0
+}
+
+fn prompt_preview(prompt: &str) -> (String, bool) {
+    let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return ("User request".to_string(), false);
+    }
+
+    let mut preview = normalized
+        .chars()
+        .take(PROMPT_PREVIEW_LEN)
+        .collect::<String>();
+    let truncated = normalized.chars().count() > PROMPT_PREVIEW_LEN;
+    if truncated {
+        preview = preview.trim_end().to_string();
+        preview.push_str("...");
+    }
+    (preview, truncated)
+}
+
+fn build_attribution_category_node(
+    category: &AttributionNode,
+    root_tokens: u64,
+    root_cost: Option<f64>,
+    root_duration_ms: Option<u64>,
+) -> AttributionVisualNode {
+    let children = if category.category == Some(AttributionCategory::Compaction)
+        || category.children.len() == 1
+            && redundant_single_source(category.category, &category.children[0].label)
+    {
+        Vec::new()
+    } else {
+        category
+            .children
+            .iter()
+            .map(|source| {
+                build_attribution_source_node(
+                    source,
+                    category.category,
+                    root_tokens,
+                    root_cost,
+                    root_duration_ms,
+                )
+            })
+            .collect()
+    };
+
+    AttributionVisualNode {
+        label: category.label.clone(),
+        tokens: category.tokens,
+        percent_of_root: category.percent_of_root,
+        estimated: category.estimated,
+        cost: allocated_attribution_cost(root_cost, category.tokens, root_tokens),
+        duration_ms: allocated_attribution_duration(root_duration_ms, category.tokens, root_tokens),
+        cost_estimated: root_cost.is_some(),
+        duration_estimated: root_duration_ms.is_some(),
+        depth: 1,
+        y: 0,
+        children,
+    }
+}
+
+fn redundant_single_source(category: Option<AttributionCategory>, source: &str) -> bool {
+    matches!(
+        (category, source),
+        (Some(AttributionCategory::UserPrompt), "Current prompt")
+            | (Some(AttributionCategory::Context), "Prior turns")
+            | (
+                Some(AttributionCategory::ProviderRuntime),
+                "Provider-managed input"
+            )
+    )
+}
+
+fn build_attribution_source_node(
+    source: &AttributionNode,
+    category: Option<AttributionCategory>,
+    root_tokens: u64,
+    root_cost: Option<f64>,
+    root_duration_ms: Option<u64>,
+) -> AttributionVisualNode {
+    let count = source_invocation_count(source);
+    let source_label = if category == Some(AttributionCategory::Agents) {
+        single_agent_purpose(source)
+            .map(|purpose| format!("{}: {purpose}", source.label))
+            .unwrap_or_else(|| source.label.clone())
+    } else {
+        source.label.clone()
+    };
+    let label = if count > 1 {
+        format!("{} ({})", source_label, invocation_count_label(count))
+    } else {
+        source_label
+    };
+    AttributionVisualNode {
+        label,
+        tokens: source.tokens,
+        percent_of_root: source.percent_of_root,
+        estimated: source.estimated,
+        cost: allocated_attribution_cost(root_cost, source.tokens, root_tokens),
+        duration_ms: allocated_attribution_duration(root_duration_ms, source.tokens, root_tokens),
+        cost_estimated: root_cost.is_some(),
+        duration_estimated: root_duration_ms.is_some(),
+        depth: 2,
+        y: 0,
+        children: Vec::new(),
+    }
+}
+
+fn allocated_attribution_cost(cost: Option<f64>, tokens: u64, root_tokens: u64) -> Option<f64> {
+    cost.map(|cost| {
+        if root_tokens == 0 {
+            0.0
+        } else {
+            cost * tokens as f64 / root_tokens as f64
+        }
+    })
+}
+
+fn allocated_attribution_duration(
+    duration_ms: Option<u64>,
+    tokens: u64,
+    root_tokens: u64,
+) -> Option<u64> {
+    duration_ms.map(|duration_ms| {
+        if root_tokens == 0 {
+            return 0;
+        }
+        let scaled = duration_ms as u128 * tokens as u128;
+        ((scaled + root_tokens as u128 / 2) / root_tokens as u128) as u64
+    })
+}
+
+fn single_agent_purpose(source: &AttributionNode) -> Option<String> {
+    let mut calls = source
+        .children
+        .iter()
+        .filter(|invocation| !invocation.label.ends_with(" result"));
+    let purpose = calls.next()?.label.as_str();
+    if calls.next().is_some() {
+        return None;
+    }
+    Some(
+        purpose
+            .rsplit_once(" #")
+            .filter(|(_, sequence)| sequence.chars().all(|character| character.is_ascii_digit()))
+            .map(|(label, _)| label)
+            .unwrap_or(purpose)
+            .to_string(),
+    )
+}
+
+fn invocation_count_label(count: usize) -> String {
+    format!("{count} times")
+}
+
+fn source_invocation_count(source: &AttributionNode) -> usize {
+    let calls = source
+        .children
+        .iter()
+        .filter(|invocation| !invocation.label.ends_with(" result"))
+        .count();
+    if calls == 0 {
+        source.children.len()
+    } else {
+        calls
+    }
+}
+
+fn build_attribution_infographic(
+    root: &mut AttributionVisualNode,
+    width: usize,
+    palette: theme::ProviderPalette,
+) -> AttributionCanvas {
+    if width == 0 {
+        return AttributionCanvas { lines: Vec::new() };
+    }
+
+    let columns = attribution_columns(width);
+    let mut next_leaf_y = 2;
+    assign_attribution_y(root, &columns, &mut next_leaf_y);
+    let height = attribution_tree_bottom(root, &columns)
+        .saturating_add(1)
+        .max(attribution_node_height(root, &columns) + 2);
+    let mut grid = vec![vec![(' ', Style::default()); width]; height];
+    let headings = ["total", "category", "source"];
+    for (index, heading) in headings.into_iter().enumerate() {
+        let (x, column_width) = columns[index];
+        let heading = truncate_display_width(heading, column_width);
+        let heading_x = x + column_width.saturating_sub(heading.width()) / 2;
+        write_attribution_text(
+            &mut grid,
+            heading_x,
+            0,
+            &heading,
+            Style::default().fg(palette.dim),
+            column_width,
+        );
+    }
+
+    let mut connector_masks = vec![vec![0_u8; width]; height];
+    let mut arrows = Vec::new();
+    draw_attribution_connectors(root, &columns, &mut connector_masks, &mut arrows);
+    let connector_style = Style::default()
+        .fg(palette.primary)
+        .add_modifier(Modifier::BOLD);
+    for (y, row) in connector_masks.into_iter().enumerate() {
+        for (x, mask) in row.into_iter().enumerate() {
+            if mask != 0 {
+                grid[y][x] = (attribution_connector_character(mask), connector_style);
+            }
+        }
+    }
+    for (x, y) in arrows {
+        if y < grid.len() && x < grid[y].len() {
+            grid[y][x] = ('▶', connector_style);
+        }
+    }
+
+    draw_attribution_nodes(root, &columns, &mut grid, palette);
+
+    let lines = grid
+        .into_iter()
+        .map(|row| {
+            Line::from(
+                row.into_iter()
+                    .map(|(character, style)| Span::styled(character.to_string(), style))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+
+    AttributionCanvas { lines }
+}
+
+fn attribution_columns(width: usize) -> [(usize, usize); 3] {
+    let mut widths = if width >= 140 {
+        [30, 30, 48]
+    } else if width >= 100 {
+        [26, 28, 40]
+    } else if width >= 70 {
+        [20, 20, 24]
+    } else {
+        let available = width.saturating_sub(2).max(3);
+        let mut compact = [available / 3; 3];
+        for slot in compact.iter_mut().take(available % 3) {
+            *slot += 1;
+        }
+        compact
+    };
+    let node_width = widths.iter().sum::<usize>();
+    if node_width > width {
+        widths = [width / 3; 3];
+        for slot in widths.iter_mut().take(width % 3) {
+            *slot += 1;
+        }
+    }
+    let node_width = widths.iter().sum::<usize>();
+    let gap = (width.saturating_sub(node_width) / 2).clamp(1, 24);
+    let content_width = node_width.saturating_add(gap * 2);
+    let margin = width.saturating_sub(content_width) / 2;
+
+    let mut columns = [(0, 0); 3];
+    let mut x = margin;
+    for (index, column_width) in widths.into_iter().enumerate() {
+        columns[index] = (x.min(width.saturating_sub(1)), column_width.max(1));
+        x = x.saturating_add(column_width).saturating_add(gap);
+    }
+    columns
+}
+
+fn attribution_node_height(node: &AttributionVisualNode, columns: &[(usize, usize); 3]) -> usize {
+    if node.depth != 0 {
+        return ATTRIBUTION_NODE_HEIGHT;
+    }
+
+    let width = columns[0].1;
+    let inner_width = width.saturating_sub(2).max(1);
+    word_wrap(&node.label, inner_width).len().max(1) + 4
+}
+
+fn attribution_node_center(node: &AttributionVisualNode, columns: &[(usize, usize); 3]) -> usize {
+    node.y + attribution_node_height(node, columns) / 2
+}
+
+fn assign_attribution_y(
+    node: &mut AttributionVisualNode,
+    columns: &[(usize, usize); 3],
+    next_leaf_y: &mut usize,
+) {
+    if node.children.is_empty() {
+        node.y = *next_leaf_y;
+        *next_leaf_y = next_leaf_y
+            .saturating_add(attribution_node_height(node, columns) + ATTRIBUTION_NODE_GAP);
+        return;
+    }
+
+    for child in &mut node.children {
+        assign_attribution_y(child, columns, next_leaf_y);
+    }
+    let first_center = attribution_node_center(&node.children[0], columns);
+    let last_center = attribution_node_center(&node.children[node.children.len() - 1], columns);
+    node.y = ((first_center + last_center) / 2)
+        .saturating_sub(attribution_node_height(node, columns) / 2);
+}
+
+fn attribution_tree_bottom(node: &AttributionVisualNode, columns: &[(usize, usize); 3]) -> usize {
+    node.children
+        .iter()
+        .map(|child| attribution_tree_bottom(child, columns))
+        .fold(node.y + attribution_node_height(node, columns), usize::max)
+}
+
+fn draw_attribution_connectors(
+    node: &AttributionVisualNode,
+    columns: &[(usize, usize); 3],
+    masks: &mut [Vec<u8>],
+    arrows: &mut Vec<(usize, usize)>,
+) {
+    if node.children.is_empty() || masks.is_empty() {
+        return;
+    }
+    let (parent_x, parent_width) = columns[node.depth.min(2)];
+    let from_x = parent_x.saturating_add(parent_width);
+    let from_y = attribution_node_center(node, columns);
+    let child_depth = node.children[0].depth.min(2);
+    let (child_x, _) = columns[child_depth];
+    draw_attribution_branch(
+        masks,
+        arrows,
+        from_x,
+        from_y,
+        child_x,
+        node.children
+            .iter()
+            .map(|child| attribution_node_center(child, columns)),
+    );
+    for child in &node.children {
+        draw_attribution_connectors(child, columns, masks, arrows);
+    }
+}
+
+fn draw_attribution_branch(
+    masks: &mut [Vec<u8>],
+    arrows: &mut Vec<(usize, usize)>,
+    from_x: usize,
+    from_y: usize,
+    child_x: usize,
+    child_rows: impl Iterator<Item = usize>,
+) {
+    if masks.is_empty() || from_y >= masks.len() || child_x == 0 {
+        return;
+    }
+    let width = masks[0].len();
+    let arrow_x = child_x.saturating_sub(1);
+    if from_x >= width || arrow_x >= width {
+        return;
+    }
+    let child_rows = child_rows
+        .filter(|row| *row < masks.len())
+        .collect::<Vec<_>>();
+    if child_rows.is_empty() {
+        return;
+    }
+    arrows.extend(child_rows.iter().map(|row| (arrow_x, *row)));
+    if from_x >= arrow_x {
+        return;
+    }
+
+    let end_x = arrow_x.saturating_sub(1).max(from_x);
+    let trunk_x = from_x + end_x.saturating_sub(from_x) / 2;
+    let top = *child_rows.iter().min().unwrap_or(&from_y);
+    let bottom = *child_rows.iter().max().unwrap_or(&from_y);
+    add_attribution_horizontal(masks, from_y, from_x, trunk_x);
+    add_attribution_vertical(masks, trunk_x, top.min(from_y), bottom.max(from_y));
+    for child_y in child_rows {
+        add_attribution_horizontal(masks, child_y, trunk_x, end_x);
+    }
+}
+
+fn add_attribution_horizontal(masks: &mut [Vec<u8>], y: usize, from: usize, to: usize) {
+    let (left, right) = if from <= to { (from, to) } else { (to, from) };
+    for x in left..right {
+        masks[y][x] |= 0b0010;
+        masks[y][x + 1] |= 0b0001;
+    }
+}
+
+fn add_attribution_vertical(masks: &mut [Vec<u8>], x: usize, from: usize, to: usize) {
+    let (top, bottom) = if from <= to { (from, to) } else { (to, from) };
+    for y in top..bottom {
+        masks[y][x] |= 0b1000;
+        masks[y + 1][x] |= 0b0100;
+    }
+}
+
+fn attribution_connector_character(mask: u8) -> char {
+    match mask {
+        0b0011 => '─',
+        0b1100 => '│',
+        0b1010 => '╭',
+        0b1001 => '╮',
+        0b0110 => '╰',
+        0b0101 => '╯',
+        0b1110 => '├',
+        0b1101 => '┤',
+        0b1011 => '┬',
+        0b0111 => '┴',
+        0b1111 => '┼',
+        0b0001 | 0b0010 => '─',
+        0b0100 | 0b1000 => '│',
+        _ => '┼',
+    }
+}
+
+fn draw_attribution_nodes(
+    node: &AttributionVisualNode,
+    columns: &[(usize, usize); 3],
+    grid: &mut [Vec<(char, Style)>],
+    palette: theme::ProviderPalette,
+) {
+    let (x, width) = columns[node.depth.min(2)];
+    draw_attribution_node(grid, x, node.y, width, node, palette);
+    for child in &node.children {
+        draw_attribution_nodes(child, columns, grid, palette);
+    }
+}
+
+fn draw_attribution_node(
+    grid: &mut [Vec<(char, Style)>],
+    x: usize,
+    y: usize,
+    width: usize,
+    node: &AttributionVisualNode,
+    palette: theme::ProviderPalette,
+) {
+    let columns = [(x, width), (x, width), (x, width)];
+    let node_height = attribution_node_height(node, &columns);
+    if width < 3 || y + node_height > grid.len() || x + width > grid[0].len() {
+        return;
+    }
+    let is_root = node.depth == 0;
+    let border_style = if is_root {
+        Style::default()
+            .fg(palette.highlight)
+            .add_modifier(Modifier::BOLD)
+    } else if node.tokens == 0 {
+        Style::default().fg(palette.dim)
+    } else {
+        Style::default()
+            .fg(palette.primary)
+            .add_modifier(Modifier::BOLD)
+    };
+    let text_style = if node.tokens == 0 {
+        Style::default().fg(palette.dim)
+    } else {
+        Style::default().fg(palette.text)
+    };
+    let label_style = if is_root {
+        text_style.add_modifier(Modifier::ITALIC)
+    } else {
+        text_style
+    };
+    let right = x + width - 1;
+    let bottom = y + node_height - 1;
+    grid[y][x] = ('╭', border_style);
+    grid[y][right] = ('╮', border_style);
+    grid[bottom][x] = ('╰', border_style);
+    grid[bottom][right] = ('╯', border_style);
+    for cell in &mut grid[y][x + 1..right] {
+        *cell = ('─', border_style);
+    }
+    for cell in &mut grid[bottom][x + 1..right] {
+        *cell = ('─', border_style);
+    }
+    for row in grid.iter_mut().take(bottom).skip(y + 1) {
+        row[x] = ('│', border_style);
+        row[right] = ('│', border_style);
+    }
+
+    let inner_width = width.saturating_sub(2);
+    let label_lines = if is_root {
+        word_wrap(&node.label, inner_width)
+    } else {
+        vec![truncate_display_width(&node.label, inner_width)]
+    };
+    for (line_index, label) in label_lines
+        .iter()
+        .take(node_height.saturating_sub(4))
+        .enumerate()
+    {
+        write_attribution_text(
+            grid,
+            x + 1,
+            y + 1 + line_index,
+            label,
+            label_style,
+            inner_width,
+        );
+    }
+
+    let metric = attribution_node_metric(node, inner_width);
+    write_attribution_text(grid, x + 1, bottom - 2, &metric, text_style, inner_width);
+    let economics = attribution_node_economics(node, inner_width);
+    write_attribution_text(grid, x + 1, bottom - 1, &economics, text_style, inner_width);
+}
+
+fn attribution_node_metric(node: &AttributionVisualNode, inner_width: usize) -> String {
+    let token_label = if node.estimated {
+        format!("~{}", format_tokens(node.tokens))
+    } else {
+        format_tokens(node.tokens)
+    };
+    let percent_label = format_attribution_percent(node.percent_of_root);
+    let metric = if inner_width >= 20 {
+        format!(
+            "{} {} {}",
+            attribution_bar(node.percent_of_root, 5),
+            token_label,
+            percent_label
+        )
+    } else if inner_width >= 13 {
+        format!("{} {}", token_label, percent_label)
+    } else {
+        token_label
+    };
+    truncate_display_width(&metric, inner_width)
+}
+
+fn attribution_node_economics(node: &AttributionVisualNode, inner_width: usize) -> String {
+    let cost = node.cost.map(|cost| {
+        let value = if cost == 0.0 {
+            "$0".to_string()
+        } else {
+            format_cost(cost)
+        };
+        if node.cost_estimated {
+            if node.depth == 0 {
+                format!("est. {value}")
+            } else {
+                format!("~{value}")
+            }
+        } else {
+            value
+        }
+    });
+    let duration = node.duration_ms.map(|duration_ms| {
+        let value = format_duration(duration_ms);
+        if node.duration_estimated {
+            format!("~{value}")
+        } else {
+            value
+        }
+    });
+    let economics = match (cost, duration) {
+        (Some(cost), Some(duration)) => format!("{cost}  {duration}"),
+        (Some(cost), None) => format!("{cost}  time —"),
+        (None, Some(duration)) => format!("cost —  {duration}"),
+        (None, None) => "cost —  time —".to_string(),
+    };
+    truncate_display_width(&economics, inner_width)
+}
+
+fn write_attribution_text(
+    grid: &mut [Vec<(char, Style)>],
+    x: usize,
+    y: usize,
+    text: &str,
+    style: Style,
+    max_width: usize,
+) {
+    if y >= grid.len() || x >= grid[y].len() {
+        return;
+    }
+    let mut column = x;
+    let end = x.saturating_add(max_width).min(grid[y].len());
+    for character in text.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(1).max(1);
+        if column + character_width > end {
+            break;
+        }
+        grid[y][column] = (character, style);
+        for continuation in 1..character_width {
+            grid[y][column + continuation] = (' ', style);
+        }
+        column += character_width;
+    }
+}
+
+fn attribution_bar(percent: f64, width: usize) -> String {
+    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
+    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+}
+
+fn format_attribution_percent(percent: f64) -> String {
+    if percent > 0.0 && percent < 0.005 {
+        "<0.01%".to_string()
+    } else {
+        format!("{percent:.2}%")
+    }
+}
+
+fn truncate_display_width(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let byte_index = byte_index_for_display_width(text, width - 1);
+    format!("{}…", &text[..byte_index])
+}
+
+fn render_attribution_document(buffer: &mut Buffer, document: AttributionDocument, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(document.border_style)
+        .title(document.title);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    Paragraph::new(Text::from(document.lines)).render(inner, buffer);
+}
+
+struct TelemetryDocument {
+    title: Line<'static>,
+    lines: Vec<Line<'static>>,
+    border_style: Style,
+}
+
+impl TelemetryDocument {
+    fn height(&self) -> u16 {
+        (self.lines.len() as u16).saturating_add(2)
+    }
+}
+
+fn build_telemetry_document(
+    turn: &TurnUsage,
+    selected: usize,
+    app: &App,
+    _inner_width: u16,
+) -> TelemetryDocument {
+    let provider_kind = app
+        .engine
+        .live_engine()
+        .and_then(|engine| engine.sessions.get(engine.active_idx))
+        .map(|session| session.provider);
+    let palette = theme::provider_palette(provider_kind);
+    let model = turn
+        .telemetry
+        .model
+        .clone()
+        .unwrap_or_else(|| "not emitted".to_string());
+    let pricing_date = turn
+        .timestamp
+        .get(..10)
+        .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+        .unwrap_or_else(|| Utc::now().date_naive());
+    let pricing = provider_kind
+        .and_then(|provider| pricing_source_at(provider, &model, pricing_date))
+        .map(|(label, _)| label);
+    let (_, catalog_date) = pricing_catalog_metadata();
+    let outcome_style = match turn.telemetry.outcome {
+        crate::model::TurnOutcome::Completed => Style::default().fg(palette.primary),
+        crate::model::TurnOutcome::InProgress => Style::default().fg(palette.highlight),
+        crate::model::TurnOutcome::Aborted | crate::model::TurnOutcome::Failed => {
+            Style::default().fg(palette.danger)
+        }
+    };
+    let context_label = turn
+        .telemetry
+        .context_window
+        .map(|window| {
+            let used = turn.telemetry.latest_input_tokens.min(window);
+            format!(
+                "{} / {} ({:.0}%)",
+                format_tokens(used),
+                format_tokens(window),
+                turn.telemetry.context_percent().unwrap_or(0.0)
+            )
+        })
+        .unwrap_or_else(|| "not emitted".to_string());
+
+    let title = Line::from(vec![
+        Span::styled(
+            " native telemetry ",
+            Style::default()
+                .fg(palette.primary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("── ", Style::default().fg(palette.dim)),
+        Span::styled(
+            format!("Turn {}", selected + 1),
+            Style::default()
+                .fg(palette.text)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("  model    ", Style::default().fg(palette.dim)),
+            Span::styled(model.clone(), Style::default().fg(palette.text)),
+            if let Some(label) = pricing {
+                Span::styled(
+                    format!("  priced as {label} ({catalog_date})"),
+                    Style::default().fg(palette.subtle),
+                )
+            } else if model == "not emitted" {
+                Span::styled("", Style::default().fg(palette.subtle))
+            } else {
+                Span::styled("  unpriced", Style::default().fg(palette.subtle))
+            },
+        ]),
+        Line::from(vec![
+            Span::styled("  outcome  ", Style::default().fg(palette.dim)),
+            Span::styled(turn.telemetry.outcome.label(), outcome_style),
+            Span::styled("  duration  ", Style::default().fg(palette.dim)),
+            Span::styled(
+                turn.telemetry
+                    .duration_ms
+                    .map(format_duration)
+                    .unwrap_or_else(|| {
+                        if turn.telemetry.outcome == crate::model::TurnOutcome::InProgress {
+                            "pending".to_string()
+                        } else {
+                            "not emitted".to_string()
+                        }
+                    }),
+                Style::default().fg(palette.subtle),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  context  ", Style::default().fg(palette.dim)),
+            Span::styled(context_label, Style::default().fg(palette.subtle)),
+            Span::styled("  cache  ", Style::default().fg(palette.dim)),
+            Span::styled(
+                format!("{:.0}%", cache_ratio(turn) * 100.0),
+                Style::default().fg(palette.subtle),
+            ),
+            Span::styled("  complexity  ", Style::default().fg(palette.dim)),
+            Span::styled(
+                turn.telemetry
+                    .complexity_percent()
+                    .map(|value| {
+                        let basis = turn
+                            .telemetry
+                            .complexity_basis()
+                            .unwrap_or("provider effort");
+                        format!("{} ({basis})", format_complexity_percent(value))
+                    })
+                    .unwrap_or_else(|| "not emitted".to_string()),
+                Style::default().fg(palette.subtle),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  actions  ", Style::default().fg(palette.dim)),
+            Span::styled(
+                format!(
+                    "{} tools  {} patches  {} searches  {} compactions  code +{} -{}",
+                    turn.telemetry.tool_calls,
+                    turn.telemetry.patches,
+                    turn.telemetry.web_searches,
+                    turn.telemetry.compactions,
+                    turn.lines_added(),
+                    turn.lines_removed(),
+                ),
+                Style::default().fg(palette.subtle),
+            ),
+        ]),
+    ];
+
+    TelemetryDocument {
+        title,
+        lines,
+        border_style: Style::default().fg(palette.dim),
+    }
+}
+
+fn render_telemetry_document(buffer: &mut Buffer, document: TelemetryDocument, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(document.border_style)
+        .title(document.title);
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    Paragraph::new(Text::from(document.lines)).render(inner, buffer);
+}
+
 struct DetailDocument<'a> {
     title: Line<'a>,
     lines: Vec<Line<'a>>,
@@ -1587,6 +2528,26 @@ impl DetailDocument<'_> {
     fn height(&self) -> u16 {
         (self.lines.len() as u16).saturating_add(2)
     }
+}
+
+fn detail_panel_height(document: &DetailDocument<'_>, inner_width: u16, expanded: bool) -> u16 {
+    if expanded {
+        document.height().max(3)
+    } else {
+        collapsed_detail_height(inner_width).max(3)
+    }
+}
+
+fn collapsed_detail_height(inner_width: u16) -> u16 {
+    let wrap_width = inner_width.saturating_sub(6).max(1) as usize;
+    let prompt_lines = (PROMPT_PREVIEW_LEN + 3).div_ceil(wrap_width);
+    let response_lines = (AGENT_RESPONSE_PREVIEW_LEN + 3).div_ceil(wrap_width);
+    u16::try_from(
+        prompt_lines
+            .saturating_add(response_lines)
+            .saturating_add(12),
+    )
+    .unwrap_or(u16::MAX)
 }
 
 fn build_detail_document<'a>(
@@ -1637,6 +2598,7 @@ fn build_detail_document<'a>(
 
     // ── PROMPT ──
     let show_full_prompt = app.expanded_view.is_some();
+    let (prompt_preview, prompt_truncated) = prompt_preview(&turn.prompt);
     lines.push(Line::from(vec![
         Span::styled("  ▸ ", Style::default().fg(palette.primary)),
         Span::styled(
@@ -1645,7 +2607,7 @@ fn build_detail_document<'a>(
                 .fg(palette.primary)
                 .add_modifier(Modifier::BOLD),
         ),
-        if !show_full_prompt && turn.prompt.len() > PROMPT_PREVIEW_LEN {
+        if !show_full_prompt && prompt_truncated {
             Span::styled("  (e to expand)", Style::default().fg(palette.dim))
         } else if show_full_prompt {
             Span::styled("  (e to collapse)", Style::default().fg(palette.dim))
@@ -1656,12 +2618,7 @@ fn build_detail_document<'a>(
     let prompt_text = if show_full_prompt {
         turn.prompt.clone()
     } else {
-        let preview: String = turn.prompt.chars().take(PROMPT_PREVIEW_LEN).collect();
-        if preview.len() < turn.prompt.len() {
-            format!("{}...", preview)
-        } else {
-            preview
-        }
+        prompt_preview
     };
     for chunk in word_wrap(&prompt_text, wrap_width) {
         lines.push(Line::from(vec![
@@ -1757,293 +2714,194 @@ fn build_detail_document<'a>(
     ]));
     lines.push(Line::from(""));
 
-    // ── NATIVE TELEMETRY ──
-    lines.push(Line::from(Span::styled(
-        format!("  {section_sep}"),
-        Style::default().fg(palette.dim),
-    )));
-    lines.push(Line::from(vec![
-        Span::styled("  ◈ ", Style::default().fg(palette.primary)),
-        Span::styled(
-            "NATIVE TELEMETRY",
-            Style::default()
-                .fg(palette.primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
-    let model = turn.telemetry.model.as_deref().unwrap_or("not emitted");
-    let pricing_date = turn
-        .timestamp
-        .get(..10)
-        .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
-        .unwrap_or_else(|| Utc::now().date_naive());
-    let pricing = provider_kind
-        .and_then(|provider| pricing_source_at(provider, model, pricing_date))
-        .map(|(label, _)| label);
-    let (_, catalog_date) = pricing_catalog_metadata();
-    lines.push(Line::from(vec![
-        Span::styled("  model    ", Style::default().fg(palette.dim)),
-        Span::styled(model, Style::default().fg(palette.text)),
-        if let Some(label) = pricing {
-            Span::styled(
-                format!("  priced as {label} ({catalog_date})"),
-                Style::default().fg(palette.subtle),
-            )
-        } else if model == "not emitted" {
-            Span::styled("", Style::default().fg(palette.subtle))
-        } else {
-            Span::styled("  unpriced", Style::default().fg(palette.subtle))
-        },
-    ]));
-    let outcome_style = match turn.telemetry.outcome {
-        crate::model::TurnOutcome::Completed => Style::default().fg(palette.primary),
-        crate::model::TurnOutcome::InProgress => Style::default().fg(palette.highlight),
-        crate::model::TurnOutcome::Aborted | crate::model::TurnOutcome::Failed => {
-            Style::default().fg(palette.danger)
-        }
-    };
-    lines.push(Line::from(vec![
-        Span::styled("  outcome  ", Style::default().fg(palette.dim)),
-        Span::styled(turn.telemetry.outcome.label(), outcome_style),
-        Span::styled("  duration  ", Style::default().fg(palette.dim)),
-        Span::styled(
-            turn.telemetry
-                .duration_ms
-                .map(format_duration)
-                .unwrap_or_else(|| {
-                    if turn.telemetry.outcome == crate::model::TurnOutcome::InProgress {
-                        "pending".to_string()
-                    } else {
-                        "not emitted".to_string()
-                    }
-                }),
-            Style::default().fg(palette.subtle),
-        ),
-    ]));
-    let context_label = turn
-        .telemetry
-        .context_window
-        .map(|window| {
-            let used = turn.telemetry.latest_input_tokens.min(window);
-            format!(
-                "{} / {} ({:.0}%)",
-                format_tokens(used),
-                format_tokens(window),
-                turn.telemetry.context_percent().unwrap_or(0.0)
-            )
-        })
-        .unwrap_or_else(|| "not emitted".to_string());
-    lines.push(Line::from(vec![
-        Span::styled("  context  ", Style::default().fg(palette.dim)),
-        Span::styled(context_label, Style::default().fg(palette.subtle)),
-        Span::styled("  cache  ", Style::default().fg(palette.dim)),
-        Span::styled(
-            format!("{:.0}%", cache_ratio(turn) * 100.0),
-            Style::default().fg(palette.subtle),
-        ),
-        Span::styled("  complexity  ", Style::default().fg(palette.dim)),
-        Span::styled(
-            turn.telemetry
-                .complexity_percent()
-                .map(|value| {
-                    let basis = turn
-                        .telemetry
-                        .complexity_basis()
-                        .unwrap_or("provider effort");
-                    format!("{} ({basis})", format_complexity_percent(value))
-                })
-                .unwrap_or_else(|| "not emitted".to_string()),
-            Style::default().fg(palette.subtle),
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  actions  ", Style::default().fg(palette.dim)),
-        Span::styled(
-            format!(
-                "{} tools  {} patches  {} searches  {} compactions  code +{} -{}",
-                turn.telemetry.tool_calls,
-                turn.telemetry.patches,
-                turn.telemetry.web_searches,
-                turn.telemetry.compactions,
-                turn.lines_added(),
-                turn.lines_removed(),
-            ),
-            Style::default().fg(palette.subtle),
-        ),
-    ]));
-    lines.push(Line::from(""));
-
     // ── AGENTS ──
     if !turn.agents.is_empty() {
         lines.push(Line::from(Span::styled(
             format!("  {section_sep}"),
             Style::default().fg(palette.dim),
         )));
-        lines.push(Line::from(Span::styled(
-            format!("  ◆ {} agents spawned", turn.agents.len()),
-            Style::default()
-                .fg(palette.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
+        lines.push(Line::from(vec![
+            Span::styled(
+                if turn.agents.len() == 1 {
+                    "  ◆ 1 agent spawned".to_string()
+                } else {
+                    format!("  ◆ {} agents spawned", turn.agents.len())
+                },
+                Style::default()
+                    .fg(palette.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if app.expanded_view.is_some() {
+                    "  (e to collapse)"
+                } else {
+                    "  (e to expand)"
+                },
+                Style::default().fg(palette.dim),
+            ),
+        ]));
         lines.push(Line::from(""));
 
-        for agent in &turn.agents {
-            let outcome_style = match agent.outcome {
-                crate::model::TurnOutcome::Completed => Style::default().fg(palette.primary),
-                crate::model::TurnOutcome::InProgress => Style::default().fg(palette.highlight),
-                crate::model::TurnOutcome::Aborted | crate::model::TurnOutcome::Failed => {
-                    Style::default().fg(palette.danger)
-                }
-            };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "  ◆ ",
-                    Style::default()
-                        .fg(palette.primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    &agent.name,
-                    Style::default()
-                        .fg(palette.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  {}  ", agent.role),
-                    Style::default().fg(palette.subtle),
-                ),
-                Span::styled(agent.outcome.label(), outcome_style),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("    ", Style::default().fg(palette.dim)),
-                Span::styled(
-                    agent.model.as_deref().unwrap_or("model not emitted"),
-                    Style::default().fg(palette.subtle),
-                ),
-                Span::styled("  ", Style::default().fg(palette.dim)),
-                Span::styled(
-                    agent.duration_ms.map(format_duration).unwrap_or_else(|| {
-                        if agent.outcome == crate::model::TurnOutcome::InProgress {
-                            "pending".to_string()
-                        } else {
-                            "duration not emitted".to_string()
-                        }
-                    }),
-                    Style::default().fg(palette.subtle),
-                ),
-                Span::styled(
-                    format!(
-                        "  {} tools  code +{} -{}",
-                        agent.tool_calls, agent.lines_added, agent.lines_removed
-                    ),
-                    Style::default().fg(palette.subtle),
-                ),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("    ", Style::default().fg(palette.dim)),
-                Span::styled(
-                    format!(
-                        "{}  ↑{} ↓{}  cache {}",
-                        if agent.cost_known || agent.cost > 0.0 {
-                            format!("est. {}", format_cost(agent.cost))
-                        } else {
-                            "estimate unavailable".to_string()
-                        },
-                        format_tokens(agent.input_tokens),
-                        format_tokens(agent.output_tokens),
-                        format_tokens(agent.cache_read_tokens),
-                    ),
-                    Style::default().fg(palette.subtle),
-                ),
-            ]));
-            lines.push(Line::from(""));
-
-            let show_full_agent = app.expanded_view.is_some();
-
-            // Request — truncated unless expanded
-            if !agent.prompt.is_empty() {
+        if app.expanded_view.is_some() {
+            for agent in &turn.agents {
+                let outcome_style = match agent.outcome {
+                    crate::model::TurnOutcome::Completed => Style::default().fg(palette.primary),
+                    crate::model::TurnOutcome::InProgress => Style::default().fg(palette.highlight),
+                    crate::model::TurnOutcome::Aborted | crate::model::TurnOutcome::Failed => {
+                        Style::default().fg(palette.danger)
+                    }
+                };
                 lines.push(Line::from(vec![
-                    Span::styled("    ▸ ", Style::default().fg(palette.primary)),
                     Span::styled(
-                        "REQUEST",
+                        "  ◆ ",
                         Style::default()
                             .fg(palette.primary)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    if !show_full_agent && agent.prompt.len() > AGENT_PROMPT_PREVIEW_LEN {
-                        Span::styled("  (e to expand)", Style::default().fg(palette.dim))
-                    } else {
-                        Span::raw("")
-                    },
-                ]));
-                let text = if show_full_agent {
-                    agent.prompt.clone()
-                } else {
-                    let p: String = agent
-                        .prompt
-                        .chars()
-                        .take(AGENT_PROMPT_PREVIEW_LEN)
-                        .collect();
-                    if p.len() < agent.prompt.len() {
-                        format!("{}...", p)
-                    } else {
-                        p
-                    }
-                };
-                for chunk in word_wrap(&text, wrap_width) {
-                    lines.push(Line::from(vec![
-                        Span::styled("      ", Style::default()),
-                        Span::styled(chunk, Style::default().fg(palette.text)),
-                    ]));
-                }
-                lines.push(Line::from(""));
-            }
-
-            // Response — truncated unless expanded
-            if !agent.response_preview.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled("    ◂ ", Style::default().fg(palette.accent)),
                     Span::styled(
-                        "RESPONSE",
+                        &agent.name,
                         Style::default()
                             .fg(palette.accent)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    if !show_full_agent && agent.response_preview.len() > AGENT_RESPONSE_PREVIEW_LEN
-                    {
-                        Span::styled("  (e to expand)", Style::default().fg(palette.dim))
-                    } else {
-                        Span::raw("")
-                    },
+                    Span::styled(
+                        format!("  {}  ", agent.role),
+                        Style::default().fg(palette.subtle),
+                    ),
+                    Span::styled(agent.outcome.label(), outcome_style),
                 ]));
-                let text = if show_full_agent {
-                    agent.response_preview.clone()
-                } else {
-                    let p: String = agent
-                        .response_preview
-                        .chars()
-                        .take(AGENT_RESPONSE_PREVIEW_LEN)
-                        .collect();
-                    if p.len() < agent.response_preview.len() {
-                        format!("{}...", p)
-                    } else {
-                        p
-                    }
-                };
-                for chunk in word_wrap(&text, wrap_width) {
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(palette.dim)),
+                    Span::styled(
+                        agent.model.as_deref().unwrap_or("model not emitted"),
+                        Style::default().fg(palette.subtle),
+                    ),
+                    Span::styled("  ", Style::default().fg(palette.dim)),
+                    Span::styled(
+                        agent.duration_ms.map(format_duration).unwrap_or_else(|| {
+                            if agent.outcome == crate::model::TurnOutcome::InProgress {
+                                "pending".to_string()
+                            } else {
+                                "duration not emitted".to_string()
+                            }
+                        }),
+                        Style::default().fg(palette.subtle),
+                    ),
+                    Span::styled(
+                        format!(
+                            "  {} tools  code +{} -{}",
+                            agent.tool_calls, agent.lines_added, agent.lines_removed
+                        ),
+                        Style::default().fg(palette.subtle),
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(palette.dim)),
+                    Span::styled(
+                        format!(
+                            "{}  ↑{} ↓{}  cache {}",
+                            if agent.cost_known || agent.cost > 0.0 {
+                                format!("est. {}", format_cost(agent.cost))
+                            } else {
+                                "estimate unavailable".to_string()
+                            },
+                            format_tokens(agent.input_tokens),
+                            format_tokens(agent.output_tokens),
+                            format_tokens(agent.cache_read_tokens),
+                        ),
+                        Style::default().fg(palette.subtle),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+
+                let show_full_agent = app.expanded_view.is_some();
+
+                // Request — truncated unless expanded
+                if !agent.prompt.is_empty() {
                     lines.push(Line::from(vec![
-                        Span::styled("      ", Style::default()),
-                        Span::styled(chunk, Style::default().fg(palette.subtle)),
+                        Span::styled("    ▸ ", Style::default().fg(palette.primary)),
+                        Span::styled(
+                            "REQUEST",
+                            Style::default()
+                                .fg(palette.primary)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        if !show_full_agent && agent.prompt.len() > AGENT_PROMPT_PREVIEW_LEN {
+                            Span::styled("  (e to expand)", Style::default().fg(palette.dim))
+                        } else {
+                            Span::raw("")
+                        },
                     ]));
+                    let text = if show_full_agent {
+                        agent.prompt.clone()
+                    } else {
+                        let p: String = agent
+                            .prompt
+                            .chars()
+                            .take(AGENT_PROMPT_PREVIEW_LEN)
+                            .collect();
+                        if p.len() < agent.prompt.len() {
+                            format!("{}...", p)
+                        } else {
+                            p
+                        }
+                    };
+                    for chunk in word_wrap(&text, wrap_width) {
+                        lines.push(Line::from(vec![
+                            Span::styled("      ", Style::default()),
+                            Span::styled(chunk, Style::default().fg(palette.text)),
+                        ]));
+                    }
+                    lines.push(Line::from(""));
                 }
+
+                // Response — truncated unless expanded
+                if !agent.response_preview.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("    ◂ ", Style::default().fg(palette.accent)),
+                        Span::styled(
+                            "RESPONSE",
+                            Style::default()
+                                .fg(palette.accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        if !show_full_agent
+                            && agent.response_preview.len() > AGENT_RESPONSE_PREVIEW_LEN
+                        {
+                            Span::styled("  (e to expand)", Style::default().fg(palette.dim))
+                        } else {
+                            Span::raw("")
+                        },
+                    ]));
+                    let text = if show_full_agent {
+                        agent.response_preview.clone()
+                    } else {
+                        let p: String = agent
+                            .response_preview
+                            .chars()
+                            .take(AGENT_RESPONSE_PREVIEW_LEN)
+                            .collect();
+                        if p.len() < agent.response_preview.len() {
+                            format!("{}...", p)
+                        } else {
+                            p
+                        }
+                    };
+                    for chunk in word_wrap(&text, wrap_width) {
+                        lines.push(Line::from(vec![
+                            Span::styled("      ", Style::default()),
+                            Span::styled(chunk, Style::default().fg(palette.subtle)),
+                        ]));
+                    }
+                    lines.push(Line::from(""));
+                }
+
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", "─".repeat(wrap_width.min(40))),
+                    Style::default().fg(palette.dim),
+                )));
                 lines.push(Line::from(""));
             }
-
-            lines.push(Line::from(Span::styled(
-                format!("    {}", "─".repeat(wrap_width.min(40))),
-                Style::default().fg(palette.dim),
-            )));
-            lines.push(Line::from(""));
         }
     }
 
@@ -2156,7 +3014,497 @@ mod tests {
                 context_window,
                 ..crate::model::TurnTelemetry::default()
             },
+            attribution: crate::model::TurnAttribution::default(),
         }
+    }
+
+    fn attribution_text(document: &AttributionDocument) -> String {
+        lines_text(&document.lines)
+    }
+
+    fn lines_text(lines: &[Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn native_telemetry_is_a_top_level_document_not_turn_detail() {
+        let mut turn = turn_with_context(0, None);
+        turn.telemetry.model = Some("gpt-test".to_string());
+        turn.telemetry.duration_ms = Some(1_250);
+        turn.telemetry.tool_calls = 3;
+        let turns = vec![turn];
+        let app = App::new_mock();
+
+        let telemetry = build_telemetry_document(&turns[0], 0, &app, 118);
+        let telemetry_text = lines_text(&telemetry.lines);
+        let telemetry_title = lines_text(std::slice::from_ref(&telemetry.title));
+        let detail = build_detail_document(&turns, 0, &app, 118);
+        let detail_text = lines_text(&detail.lines);
+
+        assert!(telemetry_title.contains("native telemetry"));
+        assert!(telemetry_title.contains("Turn 1"));
+        assert!(telemetry_text.contains("gpt-test"));
+        assert!(telemetry_text.contains("1.2s"));
+        assert!(telemetry_text.contains("3 tools"));
+        assert!(!detail_text.contains("NATIVE TELEMETRY"));
+    }
+
+    #[test]
+    fn collapsed_turn_detail_has_a_fixed_height_and_hides_agent_chat() {
+        let plain_turns = vec![turn_with_context(0, None)];
+        let mut agent_turn = turn_with_context(0, None);
+        agent_turn.prompt = "x".repeat(PROMPT_PREVIEW_LEN + 20);
+        agent_turn.response_text = "y".repeat(AGENT_RESPONSE_PREVIEW_LEN + 20);
+        agent_turn.agents = (0..3).map(test_agent).collect();
+        let agent_turns = vec![agent_turn];
+        let app = App::new_mock();
+
+        let plain = build_detail_document(&plain_turns, 0, &app, 118);
+        let collapsed = build_detail_document(&agent_turns, 0, &app, 118);
+        let collapsed_text = lines_text(&collapsed.lines);
+
+        assert_eq!(
+            detail_panel_height(&plain, 118, false),
+            detail_panel_height(&collapsed, 118, false)
+        );
+        assert!(collapsed_text.contains("3 agents spawned"));
+        assert!(collapsed_text.contains("e to expand"));
+        assert!(!collapsed_text.contains("agent 0"));
+        assert!(!collapsed_text.contains("REQUEST"));
+    }
+
+    #[test]
+    fn expanding_turn_detail_reveals_agent_chat() {
+        let mut turn = turn_with_context(0, None);
+        let mut agent = test_agent(0);
+        agent.prompt = "inspect the parser".to_string();
+        agent.response_preview = "parser inspected".to_string();
+        turn.agents = vec![agent];
+        let turns = vec![turn];
+        let mut app = App::new_mock();
+        app.expanded_view = Some('e');
+
+        let detail = build_detail_document(&turns, 0, &app, 118);
+        let text = lines_text(&detail.lines);
+
+        assert!(text.contains("1 agent spawned"));
+        assert!(text.contains("e to collapse"));
+        assert!(text.contains("agent 0"));
+        assert!(text.contains("REQUEST"));
+        assert!(detail_panel_height(&detail, 118, true) >= detail.height());
+    }
+
+    #[test]
+    fn attribution_tree_shows_all_categories_and_exact_aggregate_root() {
+        let mut turn = turn_with_context(0, None);
+        turn.prompt = "inspect".to_string();
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 1_000);
+        turn.attribution.observe(
+            crate::model::AttributionCategory::ToolsAndMcps,
+            "Read",
+            "Read README.md #1",
+            100,
+        );
+        turn.attribution.observe(
+            crate::model::AttributionCategory::ToolsAndMcps,
+            "Write",
+            "Write report.md #2",
+            80,
+        );
+        turn.attribution
+            .record_parent_request("request-1", 2_000, 500, true);
+        let app = App::new_mock();
+
+        let document = build_attribution_document(&turn, &app, 118);
+        let text = attribution_text(&document);
+
+        for category in crate::model::AttributionCategory::ALL {
+            assert!(
+                text.contains(category.label()),
+                "missing {}",
+                category.label()
+            );
+        }
+        assert!(!text.contains("all work"));
+        assert!(text.contains("inspect"));
+        assert!(text.contains("2k"));
+        assert!(!text.contains("~2k"));
+        assert!(text.contains('▶'));
+        assert!(text.contains("Read"));
+        assert!(!text.contains("Read (1 time)"));
+        assert!(!text.contains("Read README.md #1"));
+    }
+
+    #[test]
+    fn attribution_percentages_keep_two_decimals_for_small_contributions() {
+        assert_eq!(format_attribution_percent(0.104), "0.10%");
+        assert_eq!(format_attribution_percent(0.005), "0.01%");
+        assert_eq!(format_attribution_percent(0.004), "<0.01%");
+        assert_eq!(format_attribution_percent(0.0), "0.00%");
+    }
+
+    #[test]
+    fn attribution_infographic_places_children_to_the_right_with_red_curves() {
+        let mut turn = turn_with_context(0, None);
+        turn.prompt = "inspect".to_string();
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 1_000);
+        turn.attribution.observe(
+            crate::model::AttributionCategory::ToolsAndMcps,
+            "Read",
+            "Read README.md #1",
+            100,
+        );
+        turn.attribution.observe(
+            crate::model::AttributionCategory::ToolsAndMcps,
+            "Write",
+            "Write report.md #2",
+            80,
+        );
+        turn.attribution
+            .record_parent_request("request-1", 2_000, 0, true);
+        let app = App::new_mock();
+
+        let document = build_attribution_document(&turn, &app, 118);
+        let rows = document
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let root_x = rows
+            .iter()
+            .find_map(|row| row.find("inspect"))
+            .expect("root box");
+        let category_x = rows
+            .iter()
+            .find_map(|row| row.find("Tools & MCPs"))
+            .expect("category box");
+        let source_x = rows
+            .iter()
+            .find_map(|row| row.find("Read"))
+            .expect("source box");
+        assert!(root_x < category_x && category_x < source_x);
+
+        let red = theme::provider_palette(None).primary;
+        assert!(document
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| { span.content == "▶" && span.style.fg == Some(red) }));
+        assert!(document
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| {
+                matches!(span.content.as_ref(), "╭" | "╮" | "╰" | "╯") && span.style.fg == Some(red)
+            }));
+        assert!(document
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .all(|span| !matches!(span.content.as_ref(), "┌" | "┐" | "└" | "┘")));
+    }
+
+    #[test]
+    fn attribution_root_identifies_the_normalized_user_request() {
+        let mut turn = turn_with_context(0, None);
+        turn.prompt = "  fix the first\n animation   timing  ".to_string();
+        turn.attribution = crate::model::TurnAttribution::new(&turn.prompt, 0);
+        turn.attribution
+            .record_parent_request("request-1", 100, 0, true);
+        let app = App::new_mock();
+
+        let document = build_attribution_document(&turn, &app, 118);
+        let text = attribution_text(&document);
+        let italic_text = document
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .filter(|span| span.style.add_modifier.contains(Modifier::ITALIC))
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains("fix the first animation"));
+        assert!(italic_text.contains("fix the first animation"));
+        assert!(italic_text.contains("timing"));
+    }
+
+    #[test]
+    fn attribution_root_truncates_only_after_the_high_prompt_limit() {
+        let exact = "x".repeat(PROMPT_PREVIEW_LEN);
+        let over = format!("{exact}y");
+
+        assert_eq!(attribution_turn_identifier(&exact), exact);
+        let truncated = attribution_turn_identifier(&over);
+        assert_eq!(truncated.chars().count(), PROMPT_PREVIEW_LEN + 3);
+        assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn turn_detail_and_attribution_root_share_the_same_prompt_preview() {
+        let prompt = format!("  {}\n tail  ", "word ".repeat(80));
+        let (preview, truncated) = prompt_preview(&prompt);
+
+        assert!(truncated);
+        assert_eq!(attribution_turn_identifier(&prompt), preview);
+        assert!(preview.chars().count() <= PROMPT_PREVIEW_LEN + 3);
+        assert!(preview.chars().count() > PROMPT_PREVIEW_LEN);
+        assert!(preview.ends_with("..."));
+        assert!(!preview.contains('\n'));
+    }
+
+    #[test]
+    fn attribution_root_branches_round_only_the_outer_edges() {
+        let mut turn = turn_with_context(0, None);
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 1_000);
+        turn.attribution
+            .record_parent_request("request-1", 2_000, 0, true);
+        let mut visual = build_attribution_visual_tree(&turn.attribution.aggregate);
+        let width = 160;
+        let columns = attribution_columns(width);
+        let mut next_leaf_y = 2;
+        assign_attribution_y(&mut visual, &columns, &mut next_leaf_y);
+        let height = attribution_tree_bottom(&visual, &columns) + 1;
+        let mut masks = vec![vec![0_u8; width]; height];
+        let mut arrows = Vec::new();
+        draw_attribution_connectors(&visual, &columns, &mut masks, &mut arrows);
+
+        let root_end = columns[0].0 + columns[0].1;
+        let category_start = columns[1].0;
+        let vertical_lanes = (root_end..category_start)
+            .filter(|column| masks.iter().any(|row| row[*column] & 0b1100 != 0))
+            .collect::<Vec<_>>();
+        assert_eq!(vertical_lanes.len(), 1);
+        let rounded_elbows = masks
+            .iter()
+            .flat_map(|row| &row[root_end..category_start])
+            .filter(|mask| matches!(**mask, 0b1010 | 0b1001 | 0b0110 | 0b0101))
+            .count();
+        assert_eq!(rounded_elbows, 2);
+        let square_junctions = masks
+            .iter()
+            .flat_map(|row| &row[root_end..category_start])
+            .filter(|mask| **mask == 0b1111)
+            .count();
+        assert_eq!(square_junctions, 1);
+    }
+
+    #[test]
+    fn attribution_root_uses_a_rounded_rectangle() {
+        let style = Style::default();
+        let mut grid = vec![vec![(' ', style); 30]; 8];
+        let root = AttributionVisualNode {
+            label: "inspect the renderer".to_string(),
+            tokens: 1_000,
+            percent_of_root: 100.0,
+            estimated: false,
+            cost: Some(0.25),
+            duration_ms: Some(1_250),
+            cost_estimated: true,
+            duration_estimated: false,
+            depth: 0,
+            y: 0,
+            children: Vec::new(),
+        };
+        let palette = theme::provider_palette(None);
+
+        draw_attribution_node(&mut grid, 0, 0, 30, &root, palette);
+
+        let rows = grid
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|(character, _)| *character)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows[0].starts_with("╭─"));
+        assert!(rows[0].ends_with("─╮"));
+        assert!(rows[1].starts_with('│'));
+        assert!(rows[1].ends_with('│'));
+        assert!(rows[4].starts_with("╰─"));
+        assert!(rows[4].ends_with("─╯"));
+    }
+
+    #[test]
+    fn attribution_nodes_allocate_cost_and_duration_by_input_share() {
+        let mut turn = turn_with_context(0, None);
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 0);
+        turn.attribution.observe(
+            crate::model::AttributionCategory::ToolsAndMcps,
+            "Terminal",
+            "cargo test #1",
+            250,
+        );
+        turn.attribution
+            .record_parent_request("request-1", 1_000, 0, true);
+        turn.cost = 2.0;
+        turn.cost_known = true;
+        turn.telemetry.duration_ms = Some(20_000);
+
+        let visual = build_attribution_visual_tree_with_economics(
+            &turn.attribution.aggregate,
+            Some(turn.cost),
+            turn.telemetry.duration_ms,
+        );
+        let tools = visual
+            .children
+            .iter()
+            .find(|node| node.label == "Tools & MCPs")
+            .expect("tools category");
+
+        assert_eq!(visual.cost, Some(2.0));
+        assert_eq!(visual.duration_ms, Some(20_000));
+        assert!(!visual.duration_estimated);
+        assert_eq!(tools.cost, Some(0.5));
+        assert_eq!(tools.duration_ms, Some(5_000));
+        assert!(tools.cost_estimated);
+        assert!(tools.duration_estimated);
+        assert_eq!(tools.children[0].cost, Some(0.5));
+        assert_eq!(tools.children[0].duration_ms, Some(5_000));
+
+        let app = App::new_mock();
+        let text = attribution_text(&build_attribution_document(&turn, &app, 118));
+        assert!(text.contains("est. $2.00  20.0s"));
+        assert!(text.contains("~$0.50  ~5.0s"));
+    }
+
+    #[test]
+    fn attribution_tree_renders_every_source_with_counts_and_hides_invocations() {
+        let mut turn = turn_with_context(0, None);
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 0);
+        for index in 0..7 {
+            turn.attribution.observe(
+                crate::model::AttributionCategory::ToolsAndMcps,
+                format!("Tool {index}"),
+                format!("Call {index}"),
+                10 + index,
+            );
+        }
+        turn.attribution
+            .record_parent_request("request-1", 500, 0, true);
+        let app = App::new_mock();
+        let document = build_attribution_document(&turn, &app, 100);
+        let text = attribution_text(&document);
+
+        assert!(!text.contains("Other ("));
+        for index in 0..7 {
+            assert!(text.contains(&format!("Tool {index}")));
+            assert!(!text.contains(&format!("Tool {index} (1 time)")));
+            assert!(!text.contains(&format!("Call {index}")));
+        }
+    }
+
+    #[test]
+    fn attribution_source_count_does_not_count_paired_results_twice() {
+        let mut turn = turn_with_context(0, None);
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 0);
+        for invocation in ["cargo test #1", "cargo test result", "rg #2", "rg result"] {
+            turn.attribution.observe(
+                crate::model::AttributionCategory::ToolsAndMcps,
+                "Terminal",
+                invocation,
+                10,
+            );
+        }
+        turn.attribution
+            .record_parent_request("request-1", 500, 0, true);
+        let app = App::new_mock();
+
+        let text = attribution_text(&build_attribution_document(&turn, &app, 100));
+        assert!(text.contains("Terminal (2 times)"));
+        assert!(!text.contains("cargo test #1"));
+    }
+
+    #[test]
+    fn attribution_category_hides_only_a_redundant_single_source() {
+        let mut turn = turn_with_context(0, None);
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 0);
+        turn.attribution
+            .record_parent_request("request-1", 500, 0, true);
+
+        let visual = build_attribution_visual_tree(&turn.attribution.aggregate);
+        let prompt = visual
+            .children
+            .iter()
+            .find(|node| node.label == "User prompt")
+            .expect("user prompt category");
+        assert!(prompt.children.is_empty());
+    }
+
+    #[test]
+    fn attribution_compaction_is_always_a_category_only_node() {
+        let mut turn = turn_with_context(0, None);
+        turn.attribution = crate::model::TurnAttribution::new("continue", 0);
+        turn.attribution
+            .replace_active_history_estimate(400, 400, "Automatic compaction");
+        turn.attribution
+            .record_parent_request("request-1", 500, 0, true);
+
+        let visual = build_attribution_visual_tree(&turn.attribution.aggregate);
+        let compaction = visual
+            .children
+            .iter()
+            .find(|node| node.label == "Compaction")
+            .expect("compaction category");
+        assert!(compaction.tokens > 0);
+        assert!(compaction.children.is_empty());
+    }
+
+    #[test]
+    fn attribution_keeps_a_single_agent_name_and_purpose_without_redundant_count() {
+        let mut turn = turn_with_context(0, None);
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 0);
+        turn.attribution.observe(
+            crate::model::AttributionCategory::Agents,
+            "Godel",
+            "Agent instruction",
+            10,
+        );
+        turn.attribution
+            .record_parent_request("request-1", 500, 0, true);
+
+        let visual = build_attribution_visual_tree(&turn.attribution.aggregate);
+        let agents = visual
+            .children
+            .iter()
+            .find(|node| node.label == "Agents")
+            .expect("agents category");
+        assert_eq!(agents.children.len(), 1);
+        assert_eq!(agents.children[0].label, "Godel: Agent instruction");
+    }
+
+    #[test]
+    fn attribution_tree_stays_on_the_user_prompt_across_internal_requests() {
+        let mut turn = turn_with_context(0, None);
+        turn.prompt = "inspect the parser".to_string();
+        turn.attribution = crate::model::TurnAttribution::new("inspect", 100);
+        turn.attribution
+            .record_parent_request("request-1", 200, 0, true);
+        turn.attribution.set_next_request_label("After cargo test");
+        turn.attribution
+            .record_parent_request("request-2", 250, 0, true);
+        let app = App::new_mock();
+
+        let document = build_attribution_document(&turn, &app, 42);
+        let text = attribution_text(&document);
+
+        assert!(text.contains("inspect the"));
+        assert!(!text.contains("After cargo test"));
+        assert!(document.lines.iter().all(|line| line.width() <= 42));
     }
 
     fn test_agent(index: usize) -> crate::model::AgentCost {
@@ -2303,8 +3651,8 @@ mod tests {
         for (index, turn) in turns.iter_mut().enumerate() {
             turn.cost_known = true;
             turn.cost = [0.01, 0.02, 0.10][index];
-            turn.telemetry.duration_ms = Some([1_000, 2_000, 12_000][index]);
-            turn.input_tokens = [100, 200, 5_000][index];
+            turn.telemetry.duration_ms = Some([1_000, 2_000, 20_000][index]);
+            turn.input_tokens = [100, 200, 8_000][index];
         }
         turns[2].telemetry.lines_added = 30;
         turns[2].telemetry.lines_removed = 8;
@@ -2317,11 +3665,11 @@ mod tests {
         );
         assert_eq!(
             metric_callout(&turns, 2, 1).unwrap().0,
-            "duration was 6.0x session median"
+            "duration was 10.0x session median"
         );
         assert_eq!(
             metric_callout(&turns, 2, 2).unwrap().0,
-            "token use was 25.0x session median"
+            "token use was 40.0x session median"
         );
         assert_eq!(
             metric_callout(&turns, 2, 5).unwrap().0,
@@ -2469,6 +3817,46 @@ mod tests {
             .collect();
         assert_eq!(spike_points.len(), 1);
         assert_eq!(spike_points[0].fg, theme::warm());
+    }
+
+    #[test]
+    fn spike_markers_require_exceptional_cost_duration_and_token_values() {
+        let mut cost_turns = vec![
+            turn_with_context(0, None),
+            turn_with_context(0, None),
+            turn_with_context(0, None),
+        ];
+        for (turn, cost) in cost_turns.iter_mut().zip([0.01, 0.02, 0.05]) {
+            turn.cost_known = true;
+            turn.cost = cost;
+        }
+        assert!(median_spike_message(&cost_turns, 2, 0).is_none());
+        cost_turns[2].cost = 0.10;
+        assert!(median_spike_message(&cost_turns, 2, 0).is_some());
+
+        let mut duration_turns = vec![
+            turn_with_context(0, None),
+            turn_with_context(0, None),
+            turn_with_context(0, None),
+        ];
+        for (turn, duration) in duration_turns.iter_mut().zip([1_000, 2_000, 15_000]) {
+            turn.telemetry.duration_ms = Some(duration);
+        }
+        assert!(median_spike_message(&duration_turns, 2, 1).is_none());
+        duration_turns[2].telemetry.duration_ms = Some(20_000);
+        assert!(median_spike_message(&duration_turns, 2, 1).is_some());
+
+        let mut token_turns = vec![
+            turn_with_context(0, None),
+            turn_with_context(0, None),
+            turn_with_context(0, None),
+        ];
+        for (turn, tokens) in token_turns.iter_mut().zip([1_000, 2_000, 6_000]) {
+            turn.input_tokens = tokens;
+        }
+        assert!(median_spike_message(&token_turns, 2, 2).is_none());
+        token_turns[2].input_tokens = 8_000;
+        assert!(median_spike_message(&token_turns, 2, 2).is_some());
     }
 
     #[test]
