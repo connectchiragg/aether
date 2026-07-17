@@ -21,7 +21,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use event::{AppEvent, EventHandler};
-use provider::{AetherConfig, ProviderKind};
 use ratatui::prelude::*;
 use std::io;
 use std::path::PathBuf;
@@ -38,14 +37,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Watch enabled provider sessions
+    /// Watch tracked provider sessions
     Watch {
         /// Override the provider session directory
         #[arg(short, long)]
         dir: Option<PathBuf>,
     },
-    /// Enable observability for a provider
-    Setup { provider: Option<ProviderKind> },
 }
 
 #[tokio::main]
@@ -53,12 +50,11 @@ async fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
     let mut app = match cli.command {
-        Some(Commands::Setup { provider }) => {
-            return run_setup(provider);
-        }
         Some(Commands::Watch { dir }) => App::new_live(None, dir),
         None => {
-            eprintln!("Usage: aether <command>\n\n  aether setup <provider>   Enable a provider\n  aether watch              Choose a provider and watch sessions\n");
+            eprintln!(
+                "Usage: aether <command>\n\n  aether watch   Discover providers and watch sessions\n"
+            );
             return Ok(());
         }
     };
@@ -102,72 +98,6 @@ async fn main() -> io::Result<()> {
         eprintln!("Error: {e}");
     }
 
-    Ok(())
-}
-
-fn run_setup(provider: Option<ProviderKind>) -> io::Result<()> {
-    match provider {
-        None => return print_setup_status(),
-        Some(ProviderKind::Codex) => return run_setup_codex(),
-        Some(ProviderKind::Claude) => {}
-    }
-
-    let eye = "\x1b[31m⠑⠽⠑\x1b[0m";
-    println!();
-    println!("  {} \x1b[1;31maether\x1b[0m setup", eye);
-    println!("  \x1b[2m─────────────────────\x1b[0m");
-    println!();
-
-    let mut config = AetherConfig::load();
-    config.enable(ProviderKind::Claude);
-    config.save()?;
-
-    println!("  \x1b[31m●\x1b[0m Claude provider enabled");
-    println!("  \x1b[2m─────────────────────\x1b[0m");
-    println!("  \x1b[1;31m✓\x1b[0m Claude setup complete");
-    println!();
-    println!(
-        "  \x1b[2mAether will watch\x1b[0m  \x1b[1m{}\x1b[0m",
-        provider::claude_projects_dir().display()
-    );
-    println!("  \x1b[2mRun\x1b[0m  \x1b[1maether watch\x1b[0m          \x1b[2mto choose a provider\x1b[0m");
-    println!("  \x1b[2mNo Claude hooks or additional model calls are installed\x1b[0m");
-    println!();
-
-    Ok(())
-}
-
-fn print_setup_status() -> io::Result<()> {
-    let config = AetherConfig::load();
-    println!("aether setup");
-    println!();
-    for provider in ProviderKind::ALL {
-        let enabled = if config.is_enabled(provider) {
-            "enabled"
-        } else {
-            "not enabled"
-        };
-        println!("  {:<8} {}", provider.id(), enabled);
-    }
-    println!();
-    println!("Run `aether setup claude` or `aether setup codex`.");
-    Ok(())
-}
-
-fn run_setup_codex() -> io::Result<()> {
-    let mut config = AetherConfig::load();
-    config.enable(ProviderKind::Codex);
-    config.save()?;
-
-    println!();
-    println!("  \x1b[31m●\x1b[0m Codex provider enabled");
-    println!();
-    println!(
-        "  \x1b[2mAether will watch\x1b[0m  \x1b[1m{}\x1b[0m",
-        provider::codex_sessions_dir().display()
-    );
-    println!("  \x1b[2mRun\x1b[0m  \x1b[1maether watch\x1b[0m         \x1b[2mto choose a provider\x1b[0m");
-    println!();
     Ok(())
 }
 
@@ -682,6 +612,11 @@ mod terminal_tests {
         assert!(matches!(cli.command, Some(Commands::Watch { dir: None })));
         assert!(Cli::try_parse_from(["aether", "watch", "codex"]).is_err());
         assert!(Cli::try_parse_from(["aether", "watch", "claude"]).is_err());
+    }
+
+    #[test]
+    fn setup_command_is_not_exposed() {
+        assert!(Cli::try_parse_from(["aether", "setup"]).is_err());
     }
 
     #[test]

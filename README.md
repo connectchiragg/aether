@@ -37,29 +37,21 @@ It reads the native session files produced by Claude Code and Codex, groups chat
 
 ## Quick Start
 
-Install, enable your providers, and watch:
+Install, trust the Aether formula, and watch:
 
 ```bash
+brew tap connectchiragg/tap
+brew trust --formula connectchiragg/tap/aether
 brew install connectchiragg/tap/aether
-aether setup claude && aether setup codex
 aether watch
 ```
 
-Only use the provider you have installed:
+Homebrew 6 requires explicit trust before loading third-party formulae. Formula-level trust
+authorizes only Aether, not every formula that may later be added to the tap.
 
-```bash
-aether setup claude
-# or
-aether setup codex
-```
-
-Check setup status at any time:
-
-```bash
-aether setup
-```
-
-Setup enables local discovery. It does **not** install hooks, modify provider transcripts, or make model calls.
+`aether watch` discovers every supported provider automatically and labels detected providers
+as `present · tracked`. It does **not** install hooks, modify provider transcripts, require API
+keys, or make model calls.
 
 ### Install Without Homebrew
 
@@ -133,7 +125,8 @@ The collapsed turn view reports how many agents were spawned. Expand it to inspe
 
 Aether uses provider-native titles when available, falls back to the first genuine user request, and groups sessions by project. Synthetic startup instructions, hook records, and sub-agent rollouts are not promoted into standalone chats.
 
-Sessions update incrementally while `aether watch` is running. Provider cards distinguish live, idle, enabled, and unavailable states without requiring separate watch commands for Claude Code and Codex.
+Sessions update incrementally while `aether watch` is running. Provider cards distinguish
+`live · tracked`, `present · tracked`, and unavailable states with one watch command.
 
 ## Provider Support
 
@@ -169,7 +162,7 @@ Codex rollouts --/             |
                                +--> versioned pricing catalog
 ```
 
-1. Aether discovers the native files for enabled providers.
+1. Aether discovers supported providers and their native session files.
 2. Provider-specific parsers reconstruct sessions, turns, requests, and relationships.
 3. Sub-agents, hooks, compactions, and documents are attached to their native parent turn.
 4. Provider totals are normalized; lower-level attribution is reconciled deterministically.
@@ -226,7 +219,8 @@ Turn complexity normalizes provider-emitted reasoning tokens, or Claude thinking
 
 **No sessions appear**
 
-Run `aether setup`, enable the provider you use, and confirm that Claude Code or Codex has created at least one local session.
+Confirm that Claude Code or Codex has created at least one local session. Aether picks it up
+automatically on its next scan.
 
 **The terminal looks incomplete after sleep or resize**
 
@@ -242,7 +236,6 @@ The session may not expose a model ID, or the model may not yet exist in the pri
 git clone https://github.com/connectchiragg/aether.git
 cd aether
 cargo build --release
-./target/release/aether setup codex   # or claude
 ./target/release/aether watch
 ```
 
@@ -254,13 +247,13 @@ cargo test
 
 ## Uninstall
 
-Homebrew installation:
+Homebrew installations require one command:
 
 ```bash
 brew uninstall aether
 ```
 
-Remove a direct installation, Aether configuration, and artifacts from legacy releases:
+Direct installations also require one command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/uninstall.sh | bash

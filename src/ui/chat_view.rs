@@ -17,14 +17,14 @@ const SESSION_NAME_MAX_WIDTH: usize = 52;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ProviderActivity {
-    NotSetUp,
+    Unavailable,
     Idle,
     Live,
 }
 
 fn provider_activity(provider: &ProviderStatus, now: u64) -> ProviderActivity {
-    if !provider.enabled {
-        ProviderActivity::NotSetUp
+    if !provider.available {
+        ProviderActivity::Unavailable
     } else if provider.last_activity > 0 && now.saturating_sub(provider.last_activity) < 300 {
         ProviderActivity::Live
     } else {
@@ -407,17 +407,17 @@ fn render_provider_card(
     let activity_color = match activity {
         ProviderActivity::Live if tick % 12 < 8 => provider_live_color(provider.kind),
         ProviderActivity::Live => theme::dim(),
-        ProviderActivity::Idle | ProviderActivity::NotSetUp => theme::dim(),
+        ProviderActivity::Idle | ProviderActivity::Unavailable => theme::dim(),
     };
-    let activity_symbol = if activity == ProviderActivity::NotSetUp {
+    let activity_symbol = if activity == ProviderActivity::Unavailable {
         "○"
     } else {
         "●"
     };
     let state = match activity {
-        ProviderActivity::Live => "LIVE NOW".to_string(),
-        ProviderActivity::Idle => "READY".to_string(),
-        ProviderActivity::NotSetUp => provider.state_label().to_ascii_uppercase(),
+        ProviderActivity::Live => "LIVE · TRACKED".to_string(),
+        ProviderActivity::Idle => "PRESENT · TRACKED".to_string(),
+        ProviderActivity::Unavailable => provider.state_label().to_ascii_uppercase(),
     };
     let title = Line::from(vec![
         Span::styled(
@@ -890,20 +890,19 @@ mod tests {
     }
 
     #[test]
-    fn provider_activity_distinguishes_setup_idle_and_live() {
+    fn provider_activity_distinguishes_unavailable_idle_and_live() {
         let mut provider = ProviderStatus {
             kind: ProviderKind::Codex,
-            enabled: false,
-            available: true,
+            available: false,
             session_count: 1,
             last_activity: 990,
         };
         assert_eq!(
             provider_activity(&provider, 1_000),
-            ProviderActivity::NotSetUp
+            ProviderActivity::Unavailable
         );
 
-        provider.enabled = true;
+        provider.available = true;
         assert_eq!(provider_activity(&provider, 1_000), ProviderActivity::Live);
         assert_eq!(provider_activity(&provider, 1_290), ProviderActivity::Idle);
     }
@@ -943,7 +942,6 @@ mod tests {
     fn compact_provider_card_keeps_status_and_session_count_visible() {
         let provider = ProviderStatus {
             kind: ProviderKind::Claude,
-            enabled: true,
             available: true,
             session_count: 3,
             last_activity: 990,
@@ -972,7 +970,7 @@ mod tests {
             .collect();
         assert!(output.contains("CLAUDE CODE"));
         assert!(output.contains("▐▛███▜▌"));
-        assert!(output.contains("LIVE NOW"));
+        assert!(output.contains("LIVE · TRACKED"));
         assert!(output.contains("03 SESSIONS"));
     }
 }

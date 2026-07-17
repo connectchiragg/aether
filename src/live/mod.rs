@@ -7,8 +7,8 @@ use crate::model::{
     UsageStats,
 };
 use crate::provider::{
-    claude_projects_dir, codex_session_index_path, codex_sessions_dir, AetherConfig, ProviderKind,
-    ProviderStatus,
+    claude_projects_dir, codex_session_index_path, codex_sessions_dir, provider_present,
+    ProviderKind, ProviderStatus,
 };
 use crate::theme;
 use chrono::{NaiveDate, Utc};
@@ -2819,12 +2819,10 @@ pub struct LiveEngine {
     codex_titles: HashMap<String, String>,
     codex_subagent_files: HashMap<PathBuf, CodexSubagentMetadata>,
     attribution_cache: VecDeque<PathBuf>,
-    config: AetherConfig,
 }
 
 impl LiveEngine {
     pub fn new(provider: Option<ProviderKind>, dir_override: Option<PathBuf>) -> Self {
-        let config = AetherConfig::load();
         let name_overrides = Self::load_name_overrides();
         let codex_titles = Self::load_codex_titles();
         Self {
@@ -2844,15 +2842,11 @@ impl LiveEngine {
             codex_titles,
             codex_subagent_files: HashMap::new(),
             attribution_cache: VecDeque::new(),
-            config,
         }
     }
 
     fn overrides_path() -> PathBuf {
-        crate::provider::config_path()
-            .parent()
-            .map(|p| p.join("session-names.json"))
-            .unwrap_or_else(|| PathBuf::from(".session-names.json"))
+        crate::provider::config_dir().join("session-names.json")
     }
 
     fn load_name_overrides() -> HashMap<String, String> {
@@ -2993,9 +2987,6 @@ impl LiveEngine {
     }
 
     fn scan_sessions(&mut self) {
-        // Setup may be run in another terminal while this watcher remains open.
-        self.config = AetherConfig::load();
-
         let active_path = self
             .sessions
             .get(self.active_idx)
@@ -3013,6 +3004,9 @@ impl LiveEngine {
         for provider in providers {
             if let Some(dir) = self.dir_override.clone() {
                 self.scan_directory(&dir, provider, provider == ProviderKind::Codex);
+                continue;
+            }
+            if !provider_present(provider) {
                 continue;
             }
 
@@ -3358,10 +3352,10 @@ impl LiveEngine {
                     .map(|session| session.last_activity)
                     .max()
                     .unwrap_or(0);
+                let available = self.provider_available(*provider);
                 ProviderStatus {
                     kind: *provider,
-                    enabled: self.config.is_enabled(*provider),
-                    available: self.provider_available(*provider),
+                    available,
                     session_count,
                     last_activity,
                 }
@@ -3418,10 +3412,7 @@ impl LiveEngine {
     }
 
     fn provider_available(&self, provider: ProviderKind) -> bool {
-        match provider {
-            ProviderKind::Claude => claude_projects_dir().exists(),
-            ProviderKind::Codex => codex_sessions_dir().exists(),
-        }
+        provider_present(provider)
     }
 }
 

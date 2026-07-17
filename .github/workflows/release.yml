@@ -133,15 +133,11 @@ jobs:
 
             def caveats
               <<~EOS
-                Enable one or more providers:
-                  aether setup claude
-                  aether setup codex
+                Start Aether:
+                  aether watch
 
-                Then:
-                  aether watch        # choose a provider and watch sessions
-
-                To clean up after uninstall:
-                  curl -fsSL https://raw.githubusercontent.com/connectchiragg/aether/master/uninstall.sh | bash
+                Uninstall:
+                  brew uninstall aether
               EOS
             end
 

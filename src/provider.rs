@@ -1,10 +1,7 @@
-use clap::ValueEnum;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io;
-use std::path::PathBuf;
+use std::env;
+use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ProviderKind {
     Claude,
     Codex,
@@ -30,12 +27,18 @@ impl ProviderKind {
     pub fn source_label(self) -> &'static str {
         self.id()
     }
+
+    fn executable_name(self) -> &'static str {
+        match self {
+            ProviderKind::Claude => "claude",
+            ProviderKind::Codex => "codex",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ProviderStatus {
     pub kind: ProviderKind,
-    pub enabled: bool,
     pub available: bool,
     pub session_count: usize,
     pub last_activity: u64,
@@ -43,57 +46,16 @@ pub struct ProviderStatus {
 
 impl ProviderStatus {
     pub fn state_label(&self) -> &'static str {
-        if self.enabled {
-            "enabled"
-        } else if self.available {
-            "not set up"
+        if self.available {
+            "tracked"
         } else {
             "not found"
         }
     }
 }
 
-#[derive(Default, Deserialize, Serialize)]
-pub struct AetherConfig {
-    #[serde(default)]
-    pub enabled_providers: Vec<String>,
-}
-
-impl AetherConfig {
-    pub fn load() -> Self {
-        let path = config_path();
-        match fs::read_to_string(path) {
-            Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
-            Err(_) => Self::default(),
-        }
-    }
-
-    pub fn save(&self) -> io::Result<()> {
-        let path = config_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let data = serde_json::to_string_pretty(self)?;
-        fs::write(path, data)
-    }
-
-    pub fn enable(&mut self, provider: ProviderKind) {
-        let id = provider.id();
-        if !self.enabled_providers.iter().any(|p| p == id) {
-            self.enabled_providers.push(id.to_string());
-        }
-    }
-
-    pub fn is_enabled(&self, provider: ProviderKind) -> bool {
-        self.enabled_providers.iter().any(|p| p == provider.id())
-    }
-}
-
-pub fn config_path() -> PathBuf {
-    home_dir()
-        .join(".config")
-        .join("aether")
-        .join("config.json")
+pub fn config_dir() -> PathBuf {
+    home_dir().join(".config").join("aether")
 }
 
 pub fn home_dir() -> PathBuf {
@@ -112,4 +74,63 @@ pub fn codex_sessions_dir() -> PathBuf {
 
 pub fn codex_session_index_path() -> PathBuf {
     home_dir().join(".codex").join("session_index.jsonl")
+}
+
+pub fn provider_present(provider: ProviderKind) -> bool {
+    let native_data_exists = match provider {
+        ProviderKind::Claude => claude_projects_dir().exists(),
+        ProviderKind::Codex => codex_sessions_dir().exists() || codex_session_index_path().exists(),
+    };
+    native_data_exists || command_available(provider.executable_name())
+}
+
+fn command_available(command: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else {
+        return false;
+    };
+    let extensions: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+
+    env::split_paths(&path).any(|directory| {
+        extensions
+            .iter()
+            .any(|extension| executable_file(&directory.join(format!("{command}{extension}"))))
+    })
+}
+
+fn executable_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderKind, ProviderStatus};
+
+    #[test]
+    fn present_providers_are_always_tracked() {
+        let status = ProviderStatus {
+            kind: ProviderKind::Codex,
+            available: true,
+            session_count: 0,
+            last_activity: 0,
+        };
+        assert_eq!(status.state_label(), "tracked");
+    }
 }
