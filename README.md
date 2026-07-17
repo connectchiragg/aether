@@ -37,10 +37,9 @@ It reads the native session files produced by Claude Code and Codex, groups chat
 
 ## Quick Start
 
-Install, trust the Aether formula, and watch:
+Trust the Aether formula once, install, and watch:
 
 ```bash
-brew tap connectchiragg/tap
 brew trust --formula connectchiragg/tap/aether
 brew install connectchiragg/tap/aether
 aether watch
