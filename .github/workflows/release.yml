@@ -15,12 +15,16 @@ jobs:
         include:
           - target: x86_64-apple-darwin
             os: macos-latest
+            bottle_tag: sequoia
           - target: aarch64-apple-darwin
             os: macos-latest
+            bottle_tag: arm64_sequoia
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            bottle_tag: x86_64_linux
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            bottle_tag: arm64_linux
 
     runs-on: ${{ matrix.os }}
 
@@ -44,15 +48,20 @@ jobs:
 
       - name: Package
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../aether-${{ matrix.target }}.tar.gz aether
-          cd ../../..
+          VERSION="${GITHUB_REF_NAME#v}"
+          tar czf "aether-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" aether
+          BOTTLE_ROOT="bottle/aether/${VERSION}/bin"
+          mkdir -p "${BOTTLE_ROOT}"
+          cp "target/${{ matrix.target }}/release/aether" "${BOTTLE_ROOT}/aether"
+          COPYFILE_DISABLE=1 tar czf "aether-${VERSION}.${{ matrix.bottle_tag }}.bottle.tar.gz" -C bottle aether
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: aether-${{ matrix.target }}
-          path: aether-${{ matrix.target }}.tar.gz
+          path: |
+            aether-${{ matrix.target }}.tar.gz
+            aether-*.${{ matrix.bottle_tag }}.bottle.tar.gz
 
   release:
     needs: build
@@ -89,6 +98,12 @@ jobs:
             varname=$(echo "$target" | tr '-' '_')
             echo "SHA_${varname}=${sha}" >> $GITHUB_ENV
           done
+          for bottle_tag in arm64_sequoia sequoia arm64_linux x86_64_linux; do
+            bottle="aether-${VERSION}.${bottle_tag}.bottle.tar.gz"
+            curl -fsSL "https://github.com/connectchiragg/aether/releases/download/v${VERSION}/${bottle}" -o "${bottle}"
+            sha=$(sha256sum "${bottle}" | cut -d' ' -f1)
+            echo "BOTTLE_SHA_${bottle_tag}=${sha}" >> $GITHUB_ENV
+          done
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -106,6 +121,14 @@ jobs:
             homepage "https://github.com/connectchiragg/aether"
             version "${VERSION}"
             license "MIT"
+
+            bottle do
+              root_url "https://github.com/connectchiragg/aether/releases/download/v${VERSION}"
+              sha256 cellar: :any_skip_relocation, arm64_sequoia: "${BOTTLE_SHA_arm64_sequoia}"
+              sha256 cellar: :any_skip_relocation, sequoia:       "${BOTTLE_SHA_sequoia}"
+              sha256 cellar: :any_skip_relocation, arm64_linux:   "${BOTTLE_SHA_arm64_linux}"
+              sha256 cellar: :any_skip_relocation, x86_64_linux:  "${BOTTLE_SHA_x86_64_linux}"
+            end
 
             on_macos do
               if Hardware::CPU.arm?

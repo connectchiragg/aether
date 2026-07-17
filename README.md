@@ -49,6 +49,9 @@ aether watch
 Homebrew 6 requires explicit trust before loading third-party formulae. Formula-level trust
 authorizes only Aether, not every formula that may later be added to the tap.
 
+Aether ships prebuilt Homebrew bottles for supported macOS and Linux architectures, so Homebrew
+does not compile Aether or require Apple Command Line Tools.
+
 `aether watch` discovers every supported provider automatically and labels detected providers
 as `present · tracked`. It does **not** install hooks, modify provider transcripts, require API
 keys, or make model calls.
