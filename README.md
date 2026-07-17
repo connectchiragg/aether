@@ -88,7 +88,7 @@ Nodes show tokens, percentage, estimated cost, and duration. Provider totals are
 
 <img src="docs/assets/aether-agents.png" alt="Aether showing nested agents inside their parent Codex turn" width="100%">
 
-Sub-agents and hook activity do not become duplicate top-level chats. A collapsed turn shows how many agents ran; expand it to inspect each agent without losing the parent request.
+A collapsed turn shows how many agents ran; expand it to inspect each agent without losing the parent request.
 
 ## Provider Support
 
