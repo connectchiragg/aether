@@ -15,7 +15,7 @@ See context, cost, latency, tools, code changes, compactions, and agents in one 
   <a href="https://github.com/connectchiragg/aether/releases/latest"><strong>Releases</strong></a>
 </p>
 
-<p><a href="https://github.com/connectchiragg/aether/releases/latest"><img src="https://img.shields.io/github/v/release/connectchiragg/aether?style=flat-square&color=cf3f32" alt="Latest release"></a> <a href="LICENSE"><img src="https://img.shields.io/github/license/connectchiragg/aether?style=flat-square&color=e5b94b" alt="MIT license"></a> <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/built_with-Rust-cf3f32?style=flat-square" alt="Built with Rust"></a> <a href="#quick-start"><img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-d6d3d1?style=flat-square" alt="macOS and Linux"></a></p>
+<p><a href="https://github.com/connectchiragg/aether/stargazers"><img src="https://img.shields.io/github/stars/connectchiragg/aether?style=flat-square&color=e5b94b" alt="GitHub stars"></a> <a href="https://github.com/connectchiragg/aether/releases/latest"><img src="https://img.shields.io/github/v/release/connectchiragg/aether?style=flat-square&color=cf3f32" alt="Latest release"></a> <a href="LICENSE"><img src="https://img.shields.io/github/license/connectchiragg/aether?style=flat-square&color=e5b94b" alt="MIT license"></a> <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/built_with-Rust-cf3f32?style=flat-square" alt="Built with Rust"></a> <a href="#quick-start"><img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-d6d3d1?style=flat-square" alt="macOS and Linux"></a></p>
 
 <br>
 
